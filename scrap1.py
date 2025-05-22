@@ -7,13 +7,13 @@ import pandas as pd
 from datetime import datetime
 import os
 
-options = webdriver.ChromeOptions()
-options.add_argument('--headless')
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--remote-debugging-port=9222')
-driver = webdriver.Chrome(options=options)
+options = Options()
+options.binary_location = "/usr/bin/chromium-browser"  
+options.add_argument("--headless")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
 
+driver = webdriver.Chrome(options=options)
 driver.get("https://www.pwa.co.th/province/report")
 
 months = [str(i) for i in range(1, 13)]
