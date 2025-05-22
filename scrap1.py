@@ -2,19 +2,33 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
 from datetime import datetime
 import os
 
 options = Options()
-options.binary_location = "/usr/bin/chromium"  
+options.binary_location = "/usr/bin/chromium"  # ใช้ "/usr/bin/chromium-browser" ถ้าติดตั้งแบบนั้น
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 
 driver = webdriver.Chrome(options=options)
 driver.get("https://www.pwa.co.th/province/report")
+
+# ✅ ปิด cookie popup ถ้ามี
+try:
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "pwa-cookie-consent"))
+    )
+    driver.execute_script("""
+        let el = document.querySelector('.pwa-cookie-consent');
+        if (el) el.style.display = 'none';
+    """)
+except:
+    pass
 
 months = [str(i) for i in range(1, 13)]
 this_year = datetime.now().year
@@ -27,7 +41,11 @@ for year in years:
     for month in months:
         Select(driver.find_element(By.ID, "monthlist")).select_by_value(month)
         Select(driver.find_element(By.ID, "yearlist")).select_by_value(year)
-        driver.find_element(By.CLASS_NAME, "btn-primary").click()
+
+        WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CLASS_NAME, "btn-primary"))
+        ).click()
+
         time.sleep(3)
 
         table_rows = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")
@@ -48,7 +66,7 @@ for year in years:
 
 driver.quit()
 end_time = time.time()
-print(f"รวมเวลาทั้งหมดที่ใช้: {end_time - start_time:.2f} วินาที")
+print(f"\n⏱️ รวมเวลาทั้งหมดที่ใช้: {end_time - start_time:.2f} วินาที")
 
 columns = [
     "Month", 
