@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y chromium-chromedriver
-          pip install selenium pandas time os
+          pip install selenium pandas 
           
 
       - name: Run scrap1
