@@ -2,7 +2,7 @@ name: Auto Scrape Water Data Daily
 
 on:
   schedule:
-    - cron: '0 13 * * *'  
+    # - cron: '0 13 * * *'  
   workflow_dispatch:
   
 jobs:
