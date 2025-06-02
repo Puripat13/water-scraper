@@ -2,12 +2,13 @@ name: Auto Scrape Water Data Daily
 
 on:
   schedule:
-    # - cron: '0 13 * * *'  
+    - cron: '0 13 * * *'  
   workflow_dispatch:
-  
+
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v3
@@ -15,13 +16,15 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'  
+          python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Chromium
         run: |
           sudo apt-get update
-          sudo apt-get install -y chromium-browser
-          pip install selenium pandas
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+
+      - name: Install Python packages
+        run: pip install selenium pandas
 
       - name: Run scraper
         run: python scrap1.py
