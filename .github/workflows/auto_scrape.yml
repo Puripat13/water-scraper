@@ -2,7 +2,7 @@ name: Auto Scrape Water Data Daily
 
 on:
   schedule:
-    - cron: '0 13 * * *'  
+    - cron: '0 13 * * *'  # รันทุกวัน 20:00 (เวลาไทย)
   workflow_dispatch:
 
 jobs:
@@ -18,10 +18,22 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chromium
+      - name: Install Google Chrome and Chromedriver
         run: |
           sudo apt-get update
-          sudo apt-get install -y chromium-browser chromium-chromedriver
+          sudo apt-get install -y wget unzip curl jq
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install -y ./google-chrome-stable_current_amd64.deb
+
+          CHROME_VERSION=$(google-chrome --version | grep -oP '[0-9.]+' | head -1)
+          echo "Detected Chrome version: $CHROME_VERSION"
+
+          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
+          wget -O chromedriver.zip "$DRIVER_URL"
+          unzip chromedriver.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
 
       - name: Install Python packages
         run: pip install selenium pandas
