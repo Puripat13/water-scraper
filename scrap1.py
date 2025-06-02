@@ -10,10 +10,11 @@ from datetime import datetime
 import os
 
 options = Options()
-options.binary_location = "/usr/bin/google-chrome" 
+options.binary_location = "/usr/bin/google-chrome"
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
+options.page_load_strategy = "eager"
 
 driver = webdriver.Chrome(options=options)
 driver.get("https://www.pwa.co.th/province/report")
