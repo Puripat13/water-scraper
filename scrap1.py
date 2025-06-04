@@ -14,7 +14,7 @@ options.binary_location = "/usr/bin/google-chrome"
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
-options.page_load_strategy = "eager"  
+options.page_load_strategy = "eager"
 
 driver = webdriver.Chrome(options=options)
 driver.get("https://www.pwa.co.th/province/report")
@@ -57,7 +57,7 @@ for year in years:
             EC.element_to_be_clickable((By.CLASS_NAME, "btn-primary"))
         ).click()
 
-        # รอให้ตารางโหลด หรือแสดงข้อความไม่พบข้อมูล
+        # รอให้ตารางโหลด
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".table-hover tbody tr"))
@@ -68,14 +68,21 @@ for year in years:
 
         rows = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")
 
-        if month == "1" and year == str(this_year) and not rows:
-            print(f"ไม่มีข้อมูลสำหรับเดือน {month} ปี {year}, ข้ามไปปีอื่น")
-            break
+        # ข้ามเดือนที่ไม่มีข้อมูลจริง (ตารางว่างหรือแถวไม่มี td)
+        if not rows or all(len(row.find_elements(By.TAG_NAME, "td")) == 0 for row in rows):
+            print(f"ไม่มีข้อมูลในเดือน {month} ปี {year}, ข้ามเดือนนี้")
+            if int(year) == this_year:
+                print("ถึงเดือนอนาคตของปีปัจจุบันแล้ว หยุด loop")
+                break
+            continue
 
         for i in range(len(rows)):
             try:
-                row = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")[i]
+                row = rows[i]
                 cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) < 2:
+                    continue  # ข้ามแถวที่ไม่มีข้อมูลจริง
+
                 data = [col.text.strip() for col in cols]
                 if data:
                     data = [month, year] + data
@@ -104,7 +111,7 @@ if file_exists:
     try:
         df_existing = pd.read_csv(file_path, encoding="utf-8-sig")
         if list(df_existing.columns) != columns:
-            print("ชื่อคอลัมน์ของไฟล์เดิมและข้อมูลใหม่ไม่ตรงกัน! กรุณาตรวจสอบข้อมูล")
+            print("❗ ชื่อคอลัมน์ของไฟล์เดิมและข้อมูลใหม่ไม่ตรงกัน! กรุณาตรวจสอบข้อมูล")
         else:
             combined_df = pd.concat([df_existing, df], ignore_index=True)
             combined_df.drop_duplicates(subset=["Month", "Year", "Location"], keep="first", inplace=True)
@@ -120,3 +127,4 @@ if file_exists:
 else:
     df.to_csv(file_path, index=False, encoding="utf-8-sig")
     print("สร้างไฟล์ใหม่และบันทึกข้อมูลสำเร็จ")
+
