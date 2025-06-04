@@ -68,17 +68,28 @@ for year in years:
 
         rows = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")
 
-        # ข้ามเดือนที่ไม่มีข้อมูลจริง (ตารางว่างหรือแถวไม่มี td)
-        if not rows or all(len(row.find_elements(By.TAG_NAME, "td")) == 0 for row in rows):
+        # ตรวจสอบว่าแถวไม่มีข้อมูล (ไม่มี td จริง)
+        no_data = True
+        for r in range(len(rows)):
+            try:
+                tds = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")[r].find_elements(By.TAG_NAME, "td")
+                if len(tds) > 1:
+                    no_data = False
+                    break
+            except:
+                continue
+
+        if not rows or no_data:
             print(f"ไม่มีข้อมูลในเดือน {month} ปี {year}, ข้ามเดือนนี้")
             if int(year) == this_year:
                 print("ถึงเดือนอนาคตของปีปัจจุบันแล้ว หยุด loop")
                 break
             continue
 
+        # ดึงข้อมูลจากแถวที่มี td จริง
         for i in range(len(rows)):
             try:
-                row = rows[i]
+                row = driver.find_elements(By.CSS_SELECTOR, ".table-hover tbody tr")[i]
                 cols = row.find_elements(By.TAG_NAME, "td")
                 if len(cols) < 2:
                     continue  # ข้ามแถวที่ไม่มีข้อมูลจริง
@@ -111,7 +122,7 @@ if file_exists:
     try:
         df_existing = pd.read_csv(file_path, encoding="utf-8-sig")
         if list(df_existing.columns) != columns:
-            print("❗ ชื่อคอลัมน์ของไฟล์เดิมและข้อมูลใหม่ไม่ตรงกัน! กรุณาตรวจสอบข้อมูล")
+            print("ชื่อคอลัมน์ของไฟล์เดิมและข้อมูลใหม่ไม่ตรงกัน! กรุณาตรวจสอบข้อมูล")
         else:
             combined_df = pd.concat([df_existing, df], ignore_index=True)
             combined_df.drop_duplicates(subset=["Month", "Year", "Location"], keep="first", inplace=True)
@@ -127,4 +138,3 @@ if file_exists:
 else:
     df.to_csv(file_path, index=False, encoding="utf-8-sig")
     print("สร้างไฟล์ใหม่และบันทึกข้อมูลสำเร็จ")
-
