@@ -9,17 +9,30 @@ import os
 from datetime import datetime
 
 options = Options()
-options.binary_location = "/usr/bin/google-chrome" 
+options.binary_location = "/usr/bin/google-chrome"
 options.add_argument('--headless')
 options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
-options.page_load_strategy = "eager"  
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920,1080')
+options.add_argument('--remote-debugging-port=9222')
+options.page_load_strategy = "none"
 
 driver = webdriver.Chrome(options=options)
+driver.set_page_load_timeout(60)  # 🔧 ถ้าโหลดหน้าเว็บเกิน 60 วินาที จะ throw ทันที
 
 try:
-    print("🌐 กำลังโหลดหน้าเว็บ...")
-    driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+    # 🔁 ลองโหลดหน้าเว็บใหม่ได้ 3 ครั้ง
+    for attempt in range(3):
+        try:
+            print(f"🌐 กำลังโหลดหน้าเว็บ... (รอบที่ {attempt+1})")
+            driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+            break
+        except Exception as e:
+            print(f"⚠️ โหลดหน้าเว็บไม่สำเร็จในรอบที่ {attempt+1}: {e}")
+            if attempt == 2:
+                raise
+            time.sleep(5)
 
     WebDriverWait(driver, 15).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
@@ -58,13 +71,14 @@ try:
                 print("➡️ กด Next Page แล้ว...")
                 time.sleep(1)
             else:
-                print("ไม่มีหน้าถัดไปแล้ว")
+                print("✅ ไม่มีหน้าถัดไปแล้ว")
                 break
         except Exception:
-            print("ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
+            print("⚠️ ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
             break
 
-    # ✅ สร้างไฟล์ CSV
+    file_path = "waterlevel_report.csv"
+
     if all_data:
         max_columns = max(len(row) for row in all_data)
         all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
@@ -77,18 +91,19 @@ try:
         if len(column_names) < max_columns:
             column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
 
-        file_path = "waterlevel_report.csv"
         file_exists = os.path.exists(file_path)
-
         df = pd.DataFrame(all_data, columns=column_names)
         df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
 
         print(f"📄 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
     else:
-        print("❌ ไม่พบข้อมูลจากหน้าเว็บ")
+        print("❌ ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
+        with open(file_path, "w", encoding="utf-8-sig") as f:
+            f.write("ไม่มีข้อมูลที่ดึงได้\n")
 
 except Exception as e:
     print(f"❌ เกิดข้อผิดพลาด: {e}")
 
 finally:
     driver.quit()
+
