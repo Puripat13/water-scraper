@@ -11,16 +11,29 @@ def run():
     current_date = datetime.today().strftime("%d/%m/%Y")
 
     with sync_playwright() as p:
+        # เปิด browser พร้อมตั้ง user-agent
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
         print("🌐 กำลังโหลดหน้าเว็บ...")
 
         try:
-            page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", timeout=90000)
+            page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="domcontentloaded", timeout=90000)
+
+            # 🔐 ยอมรับ Cookie ถ้ามี
+            try:
+                page.wait_for_selector("button:has-text('ยอมรับ')", timeout=5000)
+                page.click("button:has-text('ยอมรับ')")
+                print("✅ คลิกยอมรับ Cookie สำเร็จ")
+            except:
+                print("ℹ️ ไม่พบปุ่มยอมรับ Cookie (หรือหมดเวลา)")
+
+            # 🔍 รอให้ตารางโหลด
             page.wait_for_selector(".MuiTable-root tbody tr", timeout=30000)
 
             while True:
                 rows = page.query_selector_all(".MuiTable-root tbody tr")
+                print(f"📄 พบ {len(rows)} แถวในหน้านี้")
 
                 for row in rows:
                     cols = row.query_selector_all("td")
@@ -36,7 +49,7 @@ def run():
 
                     all_data.append(data)
 
-                # ถ้ามีปุ่ม Next → คลิก
+                # ➡️ คลิก Next Page ถ้ามี
                 try:
                     next_button = page.query_selector("//span[@title='Next Page']/button")
                     if next_button and not next_button.is_disabled():
@@ -47,7 +60,7 @@ def run():
                         print("✅ ไม่มีหน้าถัดไปแล้ว")
                         break
                 except:
-                    print("⚠️ ไม่พบปุ่ม Next Page หรือกดไม่ได้")
+                    print("⚠️ ไม่พบปุ่ม Next Page หรือไม่สามารถกดได้")
                     break
 
         except Exception as e:
@@ -55,6 +68,7 @@ def run():
 
         browser.close()
 
+    # ✅ บันทึก CSV
     if all_data:
         max_columns = max(len(row) for row in all_data)
         all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
@@ -71,7 +85,7 @@ def run():
         df = pd.DataFrame(all_data, columns=column_names)
         df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
 
-        print(f"📄 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
+        print(f"✅ บันทึกข้อมูลสำเร็จ → {file_path} ({len(all_data)} แถว)")
     else:
         print("❌ ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
         with open(file_path, "w", encoding="utf-8-sig") as f:
@@ -79,4 +93,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
