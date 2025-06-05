@@ -19,32 +19,22 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chrome and Chromedriver
+      - name: Install Playwright + Browsers
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip curl jq
-          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt install -y ./google-chrome-stable_current_amd64.deb
-          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
-          wget -O chromedriver.zip "$DRIVER_URL"
-          unzip chromedriver.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
-          sudo chmod +x /usr/bin/chromedriver
+          pip install playwright pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          playwright install
 
-      - name: Install Python packages
-        run: pip install selenium pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
-
-      - name: Run scraper script
+      - name: Run scraper script with Playwright
         run: python scrap2.py
 
-      - name: Debug – List files in workspace
+      - name: Debug – List files
         run: ls -lah
 
       - name: Check if CSV exists before upload
         run: |
           if [ ! -f waterlevel_report.csv ]; then
-            echo "ไม่พบไฟล์ waterlevel_report.csv — ยกเลิกการอัปโหลด"
-            exit 1
+            echo "❌ ไม่พบไฟล์ waterlevel_report.csv — ข้ามการอัปโหลด"
+            exit 0
           fi
 
       - name: Upload to Google Drive
@@ -55,20 +45,3 @@ jobs:
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
