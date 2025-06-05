@@ -2,7 +2,7 @@ name: Auto Scrape Waterlevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # รันทุกวันเวลา 20:00 (ไทย)
+    - cron: '0 13 * * *'  # เวลาไทย 20:00
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,8 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -33,8 +34,18 @@ jobs:
       - name: Install Python packages
         run: pip install selenium pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
-      - name: Run scraper
-        run: python scrap2.py
+      - name: Run scraper script
+        run: python scrap_waterlevel_fixed.py
+
+      - name: Debug – List files in workspace
+        run: ls -lah
+
+      - name: Check if CSV exists before upload
+        run: |
+          if [ ! -f waterlevel_report.csv ]; then
+            echo "ไม่พบไฟล์ waterlevel_report.csv — ยกเลิกการอัปโหลด"
+            exit 1
+          fi
 
       - name: Upload to Google Drive
         uses: mathisve/gdrive-upload-action@main
