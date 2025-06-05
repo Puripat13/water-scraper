@@ -35,7 +35,7 @@ jobs:
         run: pip install selenium pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
       - name: Run scraper script
-        run: python scrap_waterlevel_fixed.py
+        run: python scrap2.py
 
       - name: Debug – List files in workspace
         run: ls -lah
