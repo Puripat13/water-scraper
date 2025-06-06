@@ -19,25 +19,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chrome and Chromedriver
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip curl jq
-          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt install -y ./google-chrome-stable_current_amd64.deb
-          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
-          wget -O chromedriver.zip "$DRIVER_URL"
-          unzip chromedriver.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
-          sudo chmod +x /usr/bin/chromedriver
-
-      - name: Install Python packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install selenium undetected-chromedriver pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          pip install playwright pandas
+          playwright install
 
       - name: Run scraper script
-        run: python scrap2.py
+        run: python scrap2_playwright.py
 
       - name: Debug – List files in workspace
         run: ls -lah
