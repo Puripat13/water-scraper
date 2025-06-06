@@ -1,74 +1,84 @@
-from playwright.sync_api import sync_playwright
-import pandas as pd
-from datetime import datetime
-import os
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 import time
+import pandas as pd
+import os
+from datetime import datetime
 
-file_path = "waterlevel_report.csv"
+options = Options()
+options.binary_location = "/usr/bin/google-chrome"
+options.add_argument('--headless')
+options.add_argument('--no-sandbox')
+options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920,1080')
+options.add_argument('--remote-debugging-port=9222')
+options.page_load_strategy = "none"
 
-def run():
+driver = webdriver.Chrome(options=options)
+driver.set_page_load_timeout(60)  # 🔧 ถ้าโหลดหน้าเว็บเกิน 60 วินาที จะ throw ทันที
+
+try:
+    # ลองโหลดหน้าเว็บใหม่ได้ 3 ครั้ง
+    for attempt in range(3):
+        try:
+            print(f"กำลังโหลดหน้าเว็บ... (รอบที่ {attempt+1})")
+            driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+            break
+        except Exception as e:
+            print(f"โหลดหน้าเว็บไม่สำเร็จในรอบที่ {attempt+1}: {e}")
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+    )
+
     all_data = []
     current_date = datetime.today().strftime("%d/%m/%Y")
 
-    with sync_playwright() as p:
-        # เปิด browser พร้อมตั้ง user-agent
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    while True:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+        )
+        table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
 
-        print("🌐 กำลังโหลดหน้าเว็บ...")
+        for row in table_rows:
+            cols = row.find_elements(By.CSS_SELECTOR, "td")
+            data = [col.text.strip() for col in cols]
 
+            if len(data) < 5:
+                continue
+
+            if len(data) == 9:
+                data[-1] = current_date
+            else:
+                data.append(current_date)
+
+            all_data.append(data)
+
+        next_button_xpath = "//span[@title='Next Page']/button"
         try:
-            page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="domcontentloaded", timeout=90000)
+            next_button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, next_button_xpath))
+            )
+            if next_button.is_enabled():
+                driver.execute_script("arguments[0].click();", next_button)
+                print("➡️ กด Next Page แล้ว...")
+                time.sleep(1)
+            else:
+                print("ไม่มีหน้าถัดไปแล้ว")
+                break
+        except Exception:
+            print("ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
+            break
 
-            # 🔐 ยอมรับ Cookie ถ้ามี
-            try:
-                page.wait_for_selector("button:has-text('ยอมรับ')", timeout=5000)
-                page.click("button:has-text('ยอมรับ')")
-                print("✅ คลิกยอมรับ Cookie สำเร็จ")
-            except:
-                print("ℹ️ ไม่พบปุ่มยอมรับ Cookie (หรือหมดเวลา)")
+    file_path = "waterlevel_report.csv"
 
-            # 🔍 รอให้ตารางโหลด
-            page.wait_for_selector(".MuiTable-root tbody tr", timeout=30000)
-
-            while True:
-                rows = page.query_selector_all(".MuiTable-root tbody tr")
-                print(f"📄 พบ {len(rows)} แถวในหน้านี้")
-
-                for row in rows:
-                    cols = row.query_selector_all("td")
-                    data = [col.inner_text().strip() for col in cols]
-
-                    if len(data) < 5:
-                        continue
-
-                    if len(data) == 9:
-                        data[-1] = current_date
-                    else:
-                        data.append(current_date)
-
-                    all_data.append(data)
-
-                # ➡️ คลิก Next Page ถ้ามี
-                try:
-                    next_button = page.query_selector("//span[@title='Next Page']/button")
-                    if next_button and not next_button.is_disabled():
-                        next_button.click()
-                        print("➡️ กด Next Page แล้ว...")
-                        time.sleep(1)
-                    else:
-                        print("✅ ไม่มีหน้าถัดไปแล้ว")
-                        break
-                except:
-                    print("⚠️ ไม่พบปุ่ม Next Page หรือไม่สามารถกดได้")
-                    break
-
-        except Exception as e:
-            print(f"❌ โหลดหน้าเว็บไม่สำเร็จ: {e}")
-
-        browser.close()
-
-    # ✅ บันทึก CSV
     if all_data:
         max_columns = max(len(row) for row in all_data)
         all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
@@ -85,11 +95,14 @@ def run():
         df = pd.DataFrame(all_data, columns=column_names)
         df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
 
-        print(f"✅ บันทึกข้อมูลสำเร็จ → {file_path} ({len(all_data)} แถว)")
+        print(f"📄 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
     else:
-        print("❌ ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
+        print("ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
         with open(file_path, "w", encoding="utf-8-sig") as f:
             f.write("ไม่มีข้อมูลที่ดึงได้\n")
 
-if __name__ == "__main__":
-    run()
+except Exception as e:
+    print(f"เกิดข้อผิดพลาด: {e}")
+
+finally:
+    driver.quit()
