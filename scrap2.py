@@ -13,6 +13,7 @@ options.binary_location = '/usr/bin/chromium-browser'
 options.add_argument('--headless')
 options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--remote-debugging-port=9222')
 options.page_load_strategy = 'eager'  # ไม่ต้องรอโหลดทั้งหมด
 
 driver = webdriver.Chrome(options=options)
