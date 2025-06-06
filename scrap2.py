@@ -1,106 +1,82 @@
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
+import asyncio
+from playwright.async_api import async_playwright
 import pandas as pd
-import os
 from datetime import datetime
+import os
 
-options = uc.ChromeOptions()
-options.add_argument('--headless')
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--disable-gpu')
-options.add_argument('--window-size=1920,1080')
-options.add_argument('--disable-software-rasterizer')
-options.add_argument('--disable-background-timer-throttling')
-options.add_argument('--blink-settings=imagesEnabled=false')
+OUTPUT_FILE = "waterlevel_report.csv"
 
-driver = uc.Chrome(options=options, use_subprocess=True)
-driver.set_page_load_timeout(60)
+async def run():
+    print("\U0001F30D กำลังโหลดหน้าเว็บ...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = await browser.new_context()
+        page = await context.new_page()
 
-try:
-    for attempt in range(3):
         try:
-            print(f"🌐 กำลังโหลดหน้าเว็บ... (รอบที่ {attempt+1})")
-            driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
-            break
+            await page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="networkidle", timeout=120000)
         except Exception as e:
-            print(f"⚠️ โหลดหน้าเว็บไม่สำเร็จในรอบที่ {attempt+1}: {e}")
-            if attempt == 2:
-                raise
-            time.sleep(5)
+            print(f"โหลดหน้าเว็บไม่สำเร็จ: {e}")
+            await browser.close()
+            with open(OUTPUT_FILE, "w", encoding="utf-8-sig") as f:
+                f.write("ไม่มีข้อมูลที่ดึงได้\n")
+            return
 
-    WebDriverWait(driver, 20).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
-    )
-
-    all_data = []
-    current_date = datetime.today().strftime("%d/%m/%Y")
-
-    while True:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
-        )
-        table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
-
-        for row in table_rows:
-            cols = row.find_elements(By.CSS_SELECTOR, "td")
-            data = [col.text.strip() for col in cols]
-
-            if len(data) < 5:
-                continue
-
-            if len(data) == 9:
-                data[-1] = current_date
-            else:
-                data.append(current_date)
-
-            all_data.append(data)
-
-        next_button_xpath = "//span[@title='Next Page']/button"
+        # คลิกปุ่ม "ยอมรับ" ถ้ามี popup
         try:
-            next_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, next_button_xpath))
-            )
-            if next_button.is_enabled():
-                driver.execute_script("arguments[0].click();", next_button)
-                print("➡️ กด Next Page แล้ว...")
-                time.sleep(1)
+            await page.locator("button:has-text(\"ยอมรับ\")").first.click(timeout=5000)
+        except:
+            pass  # ไม่มี popup ก็ข้ามไป
+
+        all_data = []
+        current_date = datetime.today().strftime("%d/%m/%Y")
+
+        while True:
+            await page.wait_for_selector(".MuiTable-root tbody tr", timeout=10000)
+            rows = await page.query_selector_all(".MuiTable-root tbody tr")
+
+            for row in rows:
+                cols = await row.query_selector_all("td")
+                data = [await col.inner_text() for col in cols]
+                if len(data) >= 5:
+                    if len(data) == 9:
+                        data[-1] = current_date
+                    else:
+                        data.append(current_date)
+                    all_data.append(data)
+
+            next_btn = page.locator("//span[@title='Next Page']/button")
+            if await next_btn.is_enabled():
+                print("กด Next Page แล้ว...")
+                await next_btn.click()
+                await page.wait_for_timeout(1000)
             else:
-                print("✅ ไม่มีหน้าถัดไปแล้ว")
+                print("ไม่มีหน้าถัดไปแล้ว")
                 break
-        except Exception:
-            print("⚠️ ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
-            break
 
-    file_path = "waterlevel_report.csv"
+        if all_data:
+            max_columns = max(len(row) for row in all_data)
+            all_data = [row + [""] * (max_columns - len(row)) for row in all_data]
 
-    if all_data:
-        max_columns = max(len(row) for row in all_data)
-        all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
+            column_names = [
+                "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ",
+                "ระดับตลิ่ง", "ค่าศูนย์เสาระดับ", "%ความจุน้ำ",
+                "สถานการณ์", "วันที่เก็บข้อมูล"
+            ]
+            if len(column_names) < max_columns:
+                column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
 
-        column_names = [
-            "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ",
-            "ระดับตลิ่ง", "ค่าศูนย์เสาระดับ", "%ความจุน้ำ",
-            "สถานการณ์", "วันที่เก็บข้อมูล"
-        ]
-        if len(column_names) < max_columns:
-            column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
+            file_exists = os.path.exists(OUTPUT_FILE)
+            df = pd.DataFrame(all_data, columns=column_names)
+            df.to_csv(OUTPUT_FILE, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
 
-        file_exists = os.path.exists(file_path)
-        df = pd.DataFrame(all_data, columns=column_names)
-        df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
+            print(f"\U0001F4C4 บันทึกข้อมูลลงไฟล์ {OUTPUT_FILE} สำเร็จ!")
+        else:
+            print("ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
+            with open(OUTPUT_FILE, "w", encoding="utf-8-sig") as f:
+                f.write("ไม่มีข้อมูลที่ดึงได้\n")
 
-        print(f"📄 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
-    else:
-        print("❌ ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
-        with open(file_path, "w", encoding="utf-8-sig") as f:
-            f.write("ไม่มีข้อมูลที่ดึงได้\n")
+        await browser.close()
 
-except Exception as e:
-    print(f"❌ เกิดข้อผิดพลาด: {e}")
-
-finally:
-    driver.quit()
+if __name__ == '__main__':
+    asyncio.run(run())
