@@ -16,24 +16,34 @@ options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--disable-gpu')
 options.add_argument('--window-size=1920,1080')
 options.add_argument('--remote-debugging-port=9222')
-options.page_load_strategy = "none"
+options.page_load_strategy = "eager"
 
 driver = webdriver.Chrome(options=options)
-driver.set_page_load_timeout(60)  # 🔧 ถ้าโหลดหน้าเว็บเกิน 60 วินาที จะ throw ทันที
+driver.set_page_load_timeout(60)
 
 try:
-    # ลองโหลดหน้าเว็บใหม่ได้ 3 ครั้ง
     for attempt in range(3):
         try:
-            print(f"กำลังโหลดหน้าเว็บ... (รอบที่ {attempt+1})")
+            print(f"🌐 กำลังโหลดหน้าเว็บ... (รอบที่ {attempt+1})")
             driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
             break
         except Exception as e:
-            print(f"โหลดหน้าเว็บไม่สำเร็จในรอบที่ {attempt+1}: {e}")
+            print(f"⚠️ โหลดหน้าเว็บไม่สำเร็จในรอบที่ {attempt+1}: {e}")
             if attempt == 2:
                 raise
             time.sleep(5)
 
+    # ✅ กดปุ่มยอมรับ Cookie ถ้ามี
+    try:
+        consent_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.MuiButton-contained"))
+        )
+        consent_button.click()
+        print("✅ กดปุ่มยอมรับ Cookie แล้ว")
+    except Exception:
+        print("⏩ ไม่มีปุ่ม Cookie หรือคลิกไม่ได้ — ข้ามไป")
+
+    # ✅ รอโหลดตาราง
     WebDriverWait(driver, 15).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
     )
@@ -43,7 +53,7 @@ try:
 
     while True:
         WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
         )
         table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
 
@@ -71,10 +81,10 @@ try:
                 print("➡️ กด Next Page แล้ว...")
                 time.sleep(1)
             else:
-                print("ไม่มีหน้าถัดไปแล้ว")
+                print("✅ ไม่มีหน้าถัดไปแล้ว")
                 break
         except Exception:
-            print("ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
+            print("⚠️ ไม่พบปุ่ม Next Page หรือปุ่มไม่สามารถกดได้")
             break
 
     file_path = "waterlevel_report.csv"
@@ -97,12 +107,13 @@ try:
 
         print(f"📄 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
     else:
-        print("ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
+        print("❌ ไม่พบข้อมูล – สร้างไฟล์เปล่าไว้ให้ GitHub ไม่พัง")
         with open(file_path, "w", encoding="utf-8-sig") as f:
             f.write("ไม่มีข้อมูลที่ดึงได้\n")
 
 except Exception as e:
-    print(f"เกิดข้อผิดพลาด: {e}")
+    print(f"❌ เกิดข้อผิดพลาด: {e}")
 
 finally:
     driver.quit()
+
