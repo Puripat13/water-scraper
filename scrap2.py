@@ -1,24 +1,23 @@
-from selenium import webdriver
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 import time
 import pandas as pd
 import os
 from datetime import datetime
 
-options = Options()
-options.binary_location = "/usr/bin/google-chrome"
+options = uc.ChromeOptions()
 options.add_argument('--headless')
 options.add_argument('--no-sandbox')
 options.add_argument('--disable-dev-shm-usage')
 options.add_argument('--disable-gpu')
 options.add_argument('--window-size=1920,1080')
-options.add_argument('--remote-debugging-port=9222')
-options.page_load_strategy = "eager"
+options.add_argument('--disable-software-rasterizer')
+options.add_argument('--disable-background-timer-throttling')
+options.add_argument('--blink-settings=imagesEnabled=false')
 
-driver = webdriver.Chrome(options=options)
+driver = uc.Chrome(options=options, use_subprocess=True)
 driver.set_page_load_timeout(60)
 
 try:
@@ -33,18 +32,7 @@ try:
                 raise
             time.sleep(5)
 
-    # ✅ กดปุ่มยอมรับ Cookie ถ้ามี
-    try:
-        consent_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.MuiButton-contained"))
-        )
-        consent_button.click()
-        print("✅ กดปุ่มยอมรับ Cookie แล้ว")
-    except Exception:
-        print("⏩ ไม่มีปุ่ม Cookie หรือคลิกไม่ได้ — ข้ามไป")
-
-    # ✅ รอโหลดตาราง
-    WebDriverWait(driver, 15).until(
+    WebDriverWait(driver, 20).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
     )
 
@@ -53,7 +41,7 @@ try:
 
     while True:
         WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
         )
         table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
 
@@ -116,4 +104,3 @@ except Exception as e:
 
 finally:
     driver.quit()
-
