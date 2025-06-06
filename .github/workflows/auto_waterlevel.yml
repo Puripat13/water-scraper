@@ -1,4 +1,4 @@
-name: Auto Scrape Water Level Daily
+name: Auto Scrape WaterLevel 
 
 on:
   schedule:
