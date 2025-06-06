@@ -25,7 +25,7 @@ jobs:
           playwright install
 
       - name: Run scraper script
-        run: python scrap2_playwright.py
+        run: python scrap2.py
 
       - name: Debug – List files in workspace
         run: ls -lah
