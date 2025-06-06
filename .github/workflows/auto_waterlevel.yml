@@ -1,17 +1,16 @@
-name: Auto Scrape Waterlevel
+name: Auto Scrape Water Level Daily
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # เวลาไทย 20:00
+    - cron: '0 13 * * *'  # รันทุกวันเวลา 20:00 ตามเวลาไทย (UTC+7)
   workflow_dispatch:
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -21,21 +20,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright pandas
-          playwright install
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser
+          pip install selenium pandas
 
-      - name: Run scraper script
-        run: python scrap2.py
-
-      - name: Debug – List files in workspace
-        run: ls -lah
-
-      - name: Check if CSV exists before upload
+      - name: Set environment variables for Chrome
         run: |
-          if [ ! -f waterlevel_report.csv ]; then
-            echo "ไม่พบไฟล์ waterlevel_report.csv — ยกเลิกการอัปโหลด"
-            exit 1
-          fi
+          echo "CHROME_BIN=/usr/bin/chromium-browser" >> $GITHUB_ENV
+
+      - name: Run scraper
+        run: python scrap2.py
 
       - name: Upload to Google Drive
         uses: mathisve/gdrive-upload-action@main
