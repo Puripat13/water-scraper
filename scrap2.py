@@ -14,7 +14,12 @@ async def run():
         page = await context.new_page()
 
         try:
-            await page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="networkidle", timeout=120000)
+            await page.goto(
+                "https://nationalthaiwater.onwr.go.th/waterlevel",
+                wait_until="domcontentloaded",
+                timeout=120000
+            )
+            await page.wait_for_selector(".MuiTable-root tbody tr", timeout=20000)
         except Exception as e:
             print(f"โหลดหน้าเว็บไม่สำเร็จ: {e}")
             await browser.close()
