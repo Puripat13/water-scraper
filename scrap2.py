@@ -16,10 +16,18 @@ async def run():
         try:
             await page.goto(
                 "https://nationalthaiwater.onwr.go.th/waterlevel",
-                wait_until="domcontentloaded",
-                timeout=120000
+                wait_until="networkidle",  # เปลี่ยนจาก "load" เป็น "networkidle"
+                timeout=180000
             )
+
+            # ✅ คลิกปุ่ม "ยอมรับ" ถ้ามี popup
+            try:
+                await page.locator("button:has-text(\"ยอมรับ\")").first.click(timeout=5000)
+            except:
+                pass
+
             await page.wait_for_selector(".MuiTable-root tbody tr", timeout=20000)
+
         except Exception as e:
             print(f"โหลดหน้าเว็บไม่สำเร็จ: {e}")
             await browser.close()
@@ -27,18 +35,14 @@ async def run():
                 f.write("ไม่มีข้อมูลที่ดึงได้\n")
             return
 
-        # คลิกปุ่ม "ยอมรับ" ถ้ามี popup
-        try:
-            await page.locator("button:has-text(\"ยอมรับ\")").first.click(timeout=5000)
-        except:
-            pass  # ไม่มี popup ก็ข้ามไป
-
         all_data = []
         current_date = datetime.today().strftime("%d/%m/%Y")
 
         while True:
             await page.wait_for_selector(".MuiTable-root tbody tr", timeout=10000)
             rows = await page.query_selector_all(".MuiTable-root tbody tr")
+
+            print(f"พบ {len(rows)} แถวในตาราง")
 
             for row in rows:
                 cols = await row.query_selector_all("td")
