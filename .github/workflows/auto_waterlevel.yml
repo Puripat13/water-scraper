@@ -2,15 +2,15 @@ name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # รันทุกวันเวลา 20:00 ตามเวลาไทย (UTC+7)
-  workflow_dispatch:
+    - cron: '0 13 * * *'   # รันทุกวันเวลา 20:00 (เวลาไทย = UTC+7)
+  workflow_dispatch:        # กดรันเองได้ด้วย
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -18,15 +18,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-browser
-          pip install selenium pandas
-
-      - name: Set environment variables for Chrome
-        run: |
-          echo "CHROME_BIN=/usr/bin/chromium-browser" >> $GITHUB_ENV
+          pip install playwright pandas
+          playwright install --with-deps
 
       - name: Run scraper
         run: python scrap2.py
