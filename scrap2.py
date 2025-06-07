@@ -16,7 +16,7 @@ def accept_cookie_if_present(page):
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
-    page.goto("https://nationalthaiwater.onwr.go.th/waterlevel")
+    page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="domcontentloaded", timeout=90000)
 
     accept_cookie_if_present(page)
     page.wait_for_selector(".MuiTable-root tbody tr", timeout=30000)
