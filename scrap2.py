@@ -11,23 +11,51 @@ import pandas as pd
 import time
 import os
 
-# ✅ ใช้ Proxy จาก GitHub Secret
-proxy = os.getenv("PROXY_URL")
+# ✅ รายการ Proxy IP ไทย
+PROXIES = [
+    "http://8.213.215.187:443",
+    "http://8.213.215.187:3128",
+    "http://8.213.222.247:8443",
+    "http://8.213.195.191:18080",
+    "http://8.213.197.208:8888"
+]
 
-options = Options()
-options.add_argument('--headless=new')
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--disable-gpu')
-options.add_argument('--window-size=1920,1080')
-options.add_argument('--blink-settings=imagesEnabled=false')
-if proxy:
+# ✅ ฟังก์ชันสร้าง driver พร้อม proxy
+def create_driver_with_proxy(proxy):
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument('--blink-settings=imagesEnabled=false')
     options.add_argument(f'--proxy-server={proxy}')
+    return webdriver.Chrome(options=options)
 
-driver = webdriver.Chrome(options=options)
-driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+# ✅ ลองใช้ proxy ทีละตัว
+driver = None
+for proxy in PROXIES:
+    try:
+        print(f"🔄 กำลังลองใช้ proxy: {proxy}")
+        driver = create_driver_with_proxy(proxy)
+        driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+        )
+        print("✅ โหลดหน้าเว็บสำเร็จด้วย proxy นี้")
+        break
+    except Exception as e:
+        print(f"❌ Proxy นี้ล้มเหลว: {proxy}\n{e}")
+        if driver:
+            driver.quit()
+            driver = None
 
-# 🟡 พยายามกดยอมรับคุกกี้ ถ้ามี
+# ❌ ถ้าทุก proxy ใช้ไม่ได้ ให้หยุดโปรแกรม
+if not driver:
+    print("🛑 ไม่สามารถเชื่อมต่อเว็บด้วย proxy ใด ๆ ได้")
+    exit(1)
+
+# ✅ พยายามกดยอมรับคุกกี้ ถ้ามี
 try:
     WebDriverWait(driver, 5).until(
         EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
@@ -36,6 +64,7 @@ try:
 except:
     print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
 
+# ✅ เริ่ม scrape
 WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
 )
