@@ -3,10 +3,7 @@ name: Auto Scrape WaterLevel
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 13 * * *'    # ทุกวันเวลา 20:00 (UTC+7)
-
-env:
-  PROXY_URL: ${{ secrets.PROXY_URL }}
+    - cron: '0 13 * * *'  # เวลาไทย 20:00
 
 jobs:
   run-scraper:
@@ -26,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium pandas chromedriver-autoinstaller
 
-      - name: Run scraper with proxy
+      - name: Run scraper with fallback proxies
         run: python scrap2.py
 
       - name: Upload to Google Drive
@@ -37,3 +34,4 @@ jobs:
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
+
