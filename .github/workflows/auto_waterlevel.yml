@@ -1,16 +1,19 @@
-name: Auto Scrape WaterLevel 
+name: Auto Scrape WaterLevel
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 13 * * *'   # รันทุกวันเวลา 20:00 (UTC+7)
-  workflow_dispatch:        # กดรันเองได้ด้วย
+    - cron: '0 13 * * *'    # ทุกวันเวลา 20:00 (UTC+7)
+
+env:
+  PROXY_URL: ${{ secrets.PROXY_URL }}
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -18,27 +21,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install selenium pandas chromedriver-autoinstaller
 
-      - name: Install Google Chrome
-        run: |
-          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt update
-          sudo apt install -y ./google-chrome-stable_current_amd64.deb
-      
-      - name: Install ChromeDriver (latest)
-        run: |
-          wget https://chromedriver.storage.googleapis.com/LATEST_RELEASE -O latest.txt
-          DRIVER_VERSION=$(cat latest.txt)
-          wget https://chromedriver.storage.googleapis.com/${DRIVER_VERSION}/chromedriver_linux64.zip
-          unzip chromedriver_linux64.zip
-          sudo mv chromedriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/chromedriver
-
-      - name: Run scraper
+      - name: Run scraper with proxy
         run: python scrap2.py
 
       - name: Upload to Google Drive
@@ -49,4 +37,3 @@ jobs:
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
-
