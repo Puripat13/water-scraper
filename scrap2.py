@@ -3,11 +3,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+import chromedriver_autoinstaller  # ✅ ใช้ติดตั้ง ChromeDriver ให้ตรงกับ Chrome
 import time
 import pandas as pd
 import os
 from datetime import datetime
 
+# ✅ ติดตั้ง ChromeDriver ให้ตรงกับเวอร์ชันของ Chrome ที่มีในระบบ
+chromedriver_autoinstaller.install()
+
+# ตั้งค่า Chrome แบบ headless และเร็วที่สุดสำหรับ GitHub Actions
 options = Options()
 options.add_argument('--headless=new')
 options.add_argument('--no-sandbox')
@@ -16,10 +21,11 @@ options.add_argument('--disable-gpu')
 options.add_argument('--window-size=1920,1080')
 options.add_argument('--blink-settings=imagesEnabled=false')
 
+# สร้าง WebDriver
 driver = webdriver.Chrome(options=options)
 driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
 
-# คลิกยอมรับคุกกี้ (ถ้ามี)
+# 🟡 กดยอมรับคุกกี้ (ถ้ามี)
 try:
     WebDriverWait(driver, 5).until(
         EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
@@ -28,6 +34,7 @@ try:
 except:
     print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
 
+# 🔄 รอตารางโหลด
 WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
 )
@@ -91,4 +98,3 @@ if all_data:
 driver.quit()
 end_time = time.time()
 print(f"⏱️ ใช้เวลาในการรันทั้งหมด: {end_time - start_time:.2f} วินาที")
-
