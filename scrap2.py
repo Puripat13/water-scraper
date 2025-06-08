@@ -1,59 +1,94 @@
-from playwright.sync_api import sync_playwright
-import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 import time
+import pandas as pd
+import os
+from datetime import datetime
 
-output_file = "waterlevel_report.csv"
-data = []
+options = Options()
+options.add_argument('--headless=new')
+options.add_argument('--no-sandbox')
+options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920,1080')
+options.add_argument('--blink-settings=imagesEnabled=false')
 
-def accept_cookie_if_present(page):
+driver = webdriver.Chrome(options=options)
+driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+
+# คลิกยอมรับคุกกี้ (ถ้ามี)
+try:
+    WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
+    ).click()
+    print("✅ คลิกยอมรับคุกกี้แล้ว")
+except:
+    print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
+
+WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+)
+
+start_time = time.time()
+all_data = []
+current_date = datetime.today().strftime("%d/%m/%Y")
+
+while True:
     try:
-        page.wait_for_selector("button:has-text('ยอมรับ')", timeout=3000)
-        page.click("button:has-text('ยอมรับ')")
-        print("\u2705 คลิกปุ่มยอมรับคุกกี้แล้ว")
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+        )
     except:
-        print("\u26A0\uFE0F ไม่พบปุ่มยอมรับคุกกี้ หรือคลิกไม่ได้")
+        print("⚠️ ตารางไม่โหลดในหน้านี้ ข้ามไป...")
+        break
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
-    page.goto("https://nationalthaiwater.onwr.go.th/waterlevel", wait_until="domcontentloaded", timeout=90000)
+    table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
+    for row in table_rows:
+        cols = row.find_elements(By.CSS_SELECTOR, "td")
+        data = [col.text.strip() for col in cols]
+        if len(data) < 5:
+            continue
+        if len(data) == 9:
+            data[-1] = current_date
+        else:
+            data.append(current_date)
+        all_data.append(data)
 
-    accept_cookie_if_present(page)
-    page.wait_for_selector(".MuiTable-root tbody tr", timeout=30000)
-
-    start = time.time()
-    page_count = 0
-
-    while True:
-        print(f"\u2B06\uFE0F ดึงข้อมูลจากหน้า {page_count + 1}")
-        rows = page.query_selector_all(".MuiTable-root tbody tr")
-        for row in rows:
-            cols = row.query_selector_all("td")
-            row_data = [col.inner_text().strip() for col in cols]
-            if len(row_data) >= 5:
-                data.append(row_data)
-
-        # ตรวจสอบปุ่ม next page
-        next_button = page.query_selector("button[aria-label='Next Page']")
-        if next_button and not next_button.is_disabled():
-            next_button.click()
-            page.wait_for_selector(".MuiTable-root tbody tr")
-            page_count += 1
+    try:
+        next_button = WebDriverWait(driver, 2).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[@title='Next Page']/button"))
+        )
+        if next_button.is_enabled():
+            driver.execute_script("arguments[0].click();", next_button)
+            print("➡️ กด Next Page แล้ว...")
+            time.sleep(0.5)
         else:
             break
+    except:
+        break
 
-    browser.close()
+if all_data:
+    max_columns = max(len(row) for row in all_data)
+    all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
 
-# แปลงเป็น DataFrame และบันทึก CSV
-max_columns = max(len(row) for row in data)
-data = [row + [''] * (max_columns - len(row)) for row in data]
+    column_names = [
+        "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ",
+        "ระดับตลิ่ง", "ค่าศูนย์เสาระดับ", "%ความจุน้ำ",
+        "สถานการณ์", "วันที่เก็บข้อมูล"
+    ]
+    if len(column_names) < max_columns:
+        column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
 
-columns = [
-    "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ", "ระดับตลิ่ง",
-    "ค่าศูนย์เสาระดับ", "%ความจุน้ำ", "สถานการณ์", "วันที่เก็บข้อมูล"
-]
-if len(columns) < max_columns:
-    columns += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(columns))]
+    file_path = "waterlevel_report.csv"
+    file_exists = os.path.exists(file_path)
+    df = pd.DataFrame(all_data, columns=column_names)
+    df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
+    print(f"📁 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
 
-pd.DataFrame(data, columns=columns).to_csv(output_file, index=False, encoding="utf-8-sig")
-print(f"\u2705 บันทึกข้อมูลลง {output_file} แล้ว ใช้เวลา {time.time() - start:.2f} วินาที")
+driver.quit()
+end_time = time.time()
+print(f"⏱️ ใช้เวลาในการรันทั้งหมด: {end_time - start_time:.2f} วินาที")
+
