@@ -1,42 +1,39 @@
-// scrap2.js (no proxy version)
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
-const path = require('path');
 const { parse } = require('json2csv');
 const dayjs = require('dayjs');
+
+puppeteer.use(StealthPlugin());
 
 const TARGET_URL = "https://nationalthaiwater.onwr.go.th/waterlevel";
 const OUTPUT_FILE = "waterlevel_report.csv";
 
 (async () => {
-  let success = false;
-
   console.log(`🌐 เปิดหน้าเว็บแบบไม่ใช้ proxy`);
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--window-size=1920,1080'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
     const page = await browser.newPage();
-
-    // เพิ่ม timeout ระดับ page
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     page.setDefaultNavigationTimeout(120000);
 
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
     console.log(`📄 Title: ${await page.title()}`);
     console.log(`🌐 URL: ${page.url()}`);
 
-    // ลองคลิกปุ่มคุกกี้ถ้ามี
+    // ปุ่มคุกกี้
     try {
-      await page.click("button:contains('ยอมรับ')");
-      console.log("✅ กดปุ่มคุกกี้แล้ว");
-    } catch (e) {
+      const [btn] = await page.$x("//button[contains(., 'ยอมรับ')]");
+      if (btn) {
+        await btn.click();
+        console.log("✅ กดปุ่มคุกกี้แล้ว");
+      } else {
+        console.log("ℹ️ ไม่พบปุ่มยอมรับคุกกี้");
+      }
+    } catch {
       console.log("ℹ️ ไม่มีปุ่มคุกกี้หรือคลิกไม่ได้");
     }
 
@@ -45,7 +42,7 @@ const OUTPUT_FILE = "waterlevel_report.csv";
       console.log("⏳ รอตารางแสดงผลสูงสุด 60 วินาที...");
       await page.waitForSelector(".MuiTable-root tbody tr", { timeout: 60000 });
     } catch (e) {
-      console.log("❌ ไม่พบตารางภายใน 60 วินาที → เขียน debug_page.html และ screenshot");
+      console.log("❌ ไม่พบตาราง → เขียน debug_page.html และ screenshot");
       fs.writeFileSync("debug_page.html", await page.content());
       await page.screenshot({ path: "debug_screenshot.png", fullPage: true });
       await browser.close();
@@ -57,8 +54,7 @@ const OUTPUT_FILE = "waterlevel_report.csv";
     for (let row of rows) {
       const cols = await row.$$eval("td", tds => tds.map(td => td.innerText.trim()));
       if (cols.length >= 5) {
-        if (cols.length === 9) cols[8] = dayjs().format('DD/MM/YYYY');
-        else cols.push(dayjs().format('DD/MM/YYYY'));
+        cols[8] = dayjs().format('DD/MM/YYYY');
         allData.push(cols);
       }
     }
@@ -72,7 +68,6 @@ const OUTPUT_FILE = "waterlevel_report.csv";
         "สถานการณ์", "วันที่เก็บข้อมูล"
       ];
       const csv = parse(allData.map(row => Object.fromEntries(row.map((val, idx) => [columnNames[idx] || `เพิ่มเติม_${idx}`, val]))));
-
       fs.writeFileSync(OUTPUT_FILE, csv, { encoding: 'utf-8' });
       console.log(`✅ บันทึกข้อมูลสำเร็จที่ ${OUTPUT_FILE}`);
     } else {
