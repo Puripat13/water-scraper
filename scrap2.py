@@ -98,3 +98,11 @@ for proxy in PROXIES:
 
 if not success:
     print("🛑 ล้มเหลวในการโหลดตารางจากทุก proxy")
+
+    fallback_path = "waterlevel_report.csv"
+    if not os.path.exists(fallback_path):
+        with open(fallback_path, "w", encoding="utf-8-sig") as f:
+            f.write("ข้อความ,ไม่มีข้อมูลให้บันทึก\n")
+        print(f"📄 เขียนไฟล์ placeholder: {fallback_path}")
+
+    exit(0)
