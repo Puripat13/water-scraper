@@ -11,7 +11,6 @@ import pandas as pd
 import time
 import os
 
-# ✅ รายการ Proxy IP ไทย
 PROXIES = [
     "http://8.213.215.187:443",
     "http://8.213.215.187:3128",
@@ -20,7 +19,6 @@ PROXIES = [
     "http://8.213.197.208:8888"
 ]
 
-# ✅ ฟังก์ชันสร้าง driver พร้อม proxy
 def create_driver_with_proxy(proxy):
     options = Options()
     options.add_argument('--headless=new')
@@ -32,13 +30,17 @@ def create_driver_with_proxy(proxy):
     options.add_argument(f'--proxy-server={proxy}')
     return webdriver.Chrome(options=options)
 
-# ✅ ลองใช้ proxy ทีละตัว
 driver = None
 for proxy in PROXIES:
     try:
         print(f"🔄 กำลังลองใช้ proxy: {proxy}")
         driver = create_driver_with_proxy(proxy)
         driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+
+        # ตรวจสอบว่าโหลดหน้าเว็บได้จริง
+        print("📄 หน้าเว็บที่โหลด (1,000 ตัวอักษรแรก):")
+        print(driver.page_source[:1000])
+
         WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
         )
@@ -50,12 +52,11 @@ for proxy in PROXIES:
             driver.quit()
             driver = None
 
-# ❌ ถ้าทุก proxy ใช้ไม่ได้ ให้หยุดโปรแกรม
 if not driver:
     print("🛑 ไม่สามารถเชื่อมต่อเว็บด้วย proxy ใด ๆ ได้")
     exit(1)
 
-# ✅ พยายามกดยอมรับคุกกี้ ถ้ามี
+# กดปุ่มยอมรับคุกกี้ (ถ้ามี)
 try:
     WebDriverWait(driver, 5).until(
         EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
@@ -64,11 +65,19 @@ try:
 except:
     print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
 
-# ✅ เริ่ม scrape
-WebDriverWait(driver, 10).until(
-    EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
-)
+# ✅ รอตารางโหลด ถ้าไม่มา → เขียน debug_page.html
+try:
+    WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+    )
+except Exception:
+    print("❌ ไม่พบตารางภายใน 20 วินาที → เขียน debug_page.html")
+    with open("debug_page.html", "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    driver.quit()
+    exit(1)
 
+# ✅ เริ่ม scrape
 start_time = time.time()
 all_data = []
 current_date = datetime.today().strftime("%d/%m/%Y")
@@ -128,4 +137,3 @@ if all_data:
 driver.quit()
 end_time = time.time()
 print(f"⏱️ ใช้เวลาในการรันทั้งหมด: {end_time - start_time:.2f} วินาที")
-
