@@ -69,13 +69,15 @@ except Exception:
     print("ℹ️ ไม่มีปุ่มคุกกี้ หรือไม่สามารถคลิกได้")
 
 try:
-    WebDriverWait(driver, 20).until(
+    print("⏳ รอตารางแสดงผลสูงสุด 60 วินาที...")
+    WebDriverWait(driver, 60).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
     )
 except Exception:
-    print("❌ ไม่พบตารางภายใน 20 วินาที → เขียน debug_page.html")
+    print("❌ ไม่พบตารางภายใน 60 วินาที → เขียน debug_page.html และ screenshot")
     with open("debug_page.html", "w", encoding="utf-8") as f:
         f.write(driver.page_source)
+    driver.save_screenshot("debug_screenshot.png")
     driver.quit()
     exit(1)
 
