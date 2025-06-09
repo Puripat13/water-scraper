@@ -57,12 +57,16 @@ if not driver:
     exit(1)
 
 try:
-    WebDriverWait(driver, 5).until(
-        EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
-    ).click()
-    print("✅ คลิกยอมรับคุกกี้แล้ว")
-except:
-    print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
+    cookie_button = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((
+            By.XPATH,
+            "//button[contains(text(), 'ยอมรับ') or contains(text(), 'Accept') or contains(text(), 'ตกลง')]"
+        ))
+    )
+    cookie_button.click()
+    print("✅ คลิกปุ่มคุกกี้แล้ว")
+except Exception:
+    print("ℹ️ ไม่มีปุ่มคุกกี้ หรือไม่สามารถคลิกได้")
 
 try:
     WebDriverWait(driver, 20).until(
