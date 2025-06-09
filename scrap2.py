@@ -1,11 +1,5 @@
-import chromedriver_autoinstaller
-chromedriver_autoinstaller.install()
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import asyncio
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from datetime import datetime
 import pandas as pd
 import time
@@ -19,129 +13,88 @@ PROXIES = [
     "http://8.213.197.208:8888"
 ]
 
-def create_driver_with_proxy(proxy):
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--blink-settings=imagesEnabled=false')
-    options.add_argument(f'--proxy-server={proxy}')
-    return webdriver.Chrome(options=options)
-
-driver = None
+success = False
 for proxy in PROXIES:
+    print(f"🔄 กำลังลองใช้ proxy: {proxy}")
     try:
-        print(f"🔄 กำลังลองใช้ proxy: {proxy}")
-        driver = create_driver_with_proxy(proxy)
-        driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(proxy={
+                "server": proxy
+            })
+            page = context.new_page()
+            page.set_default_timeout(60000)  # 60 วินาที
 
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "html"))
-        )
+            page.goto("https://nationalthaiwater.onwr.go.th/waterlevel")
 
-        print(f"📄 Title: {driver.title}")
-        print(f"🌐 URL: {driver.current_url}")
-        print("📄 HTML ที่โหลด (1,000 ตัวอักษรแรก):")
-        print(driver.page_source[:1000])
+            print(f"📄 Title: {page.title()}")
+            print(f"🌐 URL: {page.url}")
+            print("📄 HTML ที่โหลด (1,000 ตัวอักษรแรก):")
+            print(page.content()[:1000])
 
-        if "access denied" in driver.page_source.lower() or "error" in driver.title.lower():
-            raise Exception("เว็บไม่โหลดจริง อาจโดนบล็อก")
+            try:
+                page.click("button:has-text('ยอมรับ')", timeout=5000)
+                print("✅ คลิกปุ่มคุกกี้แล้ว")
+            except:
+                print("ℹ️ ไม่มีปุ่มคุกกี้ หรือไม่สามารถคลิกได้")
 
-        print("✅ โหลดหน้าเว็บสำเร็จด้วย proxy นี้")
-        break
+            print("⏳ รอตารางแสดงผลสูงสุด 60 วินาที...")
+            page.wait_for_selector(".MuiTable-root tbody tr", timeout=60000)
+
+            all_data = []
+            current_date = datetime.today().strftime("%d/%m/%Y")
+
+            while True:
+                rows = page.query_selector_all(".MuiTable-root tbody tr")
+                for row in rows:
+                    cols = row.query_selector_all("td")
+                    data = [col.inner_text().strip() for col in cols]
+                    if len(data) < 5:
+                        continue
+                    if len(data) == 9:
+                        data[-1] = current_date
+                    else:
+                        data.append(current_date)
+                    all_data.append(data)
+
+                try:
+                    next_button = page.query_selector("button[title='Next Page']")
+                    if next_button and not next_button.is_disabled():
+                        next_button.click()
+                        print("➡️ กด Next Page แล้ว...")
+                        time.sleep(1)
+                    else:
+                        break
+                except:
+                    break
+
+            if all_data:
+                max_columns = max(len(row) for row in all_data)
+                all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
+
+                column_names = [
+                    "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ",
+                    "ระดับตลิ่ง", "ค่าศูนย์เสาระดับ", "%ความจุน้ำ",
+                    "สถานการณ์", "วันที่เก็บข้อมูล"
+                ]
+                if len(column_names) < max_columns:
+                    column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
+
+                file_path = "waterlevel_report.csv"
+                file_exists = os.path.exists(file_path)
+                df = pd.DataFrame(all_data, columns=column_names)
+                df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
+                print(f"📁 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
+
+            context.close()
+            browser.close()
+            success = True
+            break
+
+    except PlaywrightTimeout:
+        print("❌ Timeout ในการโหลดหน้าเว็บ")
     except Exception as e:
         print(f"❌ Proxy นี้ล้มเหลว: {proxy}\n{e}")
-        if driver:
-            driver.quit()
-            driver = None
 
-if not driver:
-    print("🛑 ไม่สามารถเชื่อมต่อเว็บด้วย proxy ใด ๆ ได้")
-    exit(1)
-
-try:
-    cookie_button = WebDriverWait(driver, 5).until(
-        EC.element_to_be_clickable(                
-            (By.XPATH,
-             "//button[contains(text(), 'ยอมรับ') or contains(text(), 'Accept') or contains(text(), 'ตกลง')]")
-        )
-    )
-    cookie_button.click()
-    print("✅ คลิกปุ่มคุกกี้แล้ว")
-except Exception:
-    print("ℹ️ ไม่มีปุ่มคุกกี้ หรือไม่สามารถคลิกได้")
-
-try:
-    print("⏳ รอตารางแสดงผลสูงสุด 60 วินาที...")
-    WebDriverWait(driver, 60).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
-    )
-except Exception:
-    print("❌ ไม่พบตารางภายใน 60 วินาที → เขียน debug_page.html และ screenshot")
-    with open("debug_page.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
-    driver.save_screenshot("debug_screenshot.png")
-    driver.quit()
-    exit(1)
-
-start_time = time.time()
-all_data = []
-current_date = datetime.today().strftime("%d/%m/%Y")
-
-while True:
-    try:
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
-        )
-    except:
-        print("⚠️ ตารางไม่โหลดในหน้านี้ ข้ามไป...")
-        break
-
-    table_rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
-    for row in table_rows:
-        cols = row.find_elements(By.CSS_SELECTOR, "td")
-        data = [col.text.strip() for col in cols]
-        if len(data) < 5:
-            continue
-        if len(data) == 9:
-            data[-1] = current_date
-        else:
-            data.append(current_date)
-        all_data.append(data)
-
-    try:
-        next_button = WebDriverWait(driver, 3).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[@title='Next Page']/span[contains(@class,'MuiIconButton-label')]/.."))
-        )
-        if next_button.is_enabled():
-            driver.execute_script("arguments[0].click();", next_button)
-            print("➡️ กด Next Page แล้ว...")
-            time.sleep(1)
-        else:
-            break
-    except:
-        break
-
-if all_data:
-    max_columns = max(len(row) for row in all_data)
-    all_data = [row + [''] * (max_columns - len(row)) for row in all_data]
-
-    column_names = [
-        "ชื่อสถานี", "ที่ตั้ง", "เวลา", "ระดับน้ำ",
-        "ระดับตลิ่ง", "ค่าศูนย์เสาระดับ", "%ความจุน้ำ",
-        "สถานการณ์", "วันที่เก็บข้อมูล"
-    ]
-    if len(column_names) < max_columns:
-        column_names += [f"เพิ่มเติม_{i+1}" for i in range(max_columns - len(column_names))]
-
-    file_path = "waterlevel_report.csv"
-    file_exists = os.path.exists(file_path)
-    df = pd.DataFrame(all_data, columns=column_names)
-    df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
-    print(f"📁 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
-
-driver.quit()
-end_time = time.time()
-print(f"⏱️ ใช้เวลาในการรันทั้งหมด: {end_time - start_time:.2f} วินาที")
+if not success:
+    print("🛑 ล้มเหลวในการโหลดตารางจากทุก proxy")
