@@ -38,8 +38,12 @@ for proxy in PROXIES:
         driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
 
         WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+            EC.presence_of_element_located((By.TAG_NAME, "html"))
         )
+
+        if "access denied" in driver.page_source.lower() or "error" in driver.title.lower():
+            raise Exception("เว็บไม่โหลดจริง อาจโดนบล็อก")
+
         print("✅ โหลดหน้าเว็บสำเร็จด้วย proxy นี้")
         break
     except Exception as e:
