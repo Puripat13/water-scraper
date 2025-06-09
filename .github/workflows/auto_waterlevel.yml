@@ -18,13 +18,11 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install Puppeteer dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgbm-dev
-          npm install puppeteer json2csv dayjs
+          npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth json2csv dayjs
 
-      - name: Run Puppeteer scraper
+      - name: Run scraper
         run: node scrap2.js
 
       - name: Upload to Google Drive
