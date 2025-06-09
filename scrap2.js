@@ -15,11 +15,20 @@ const OUTPUT_FILE = "waterlevel_report.csv";
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080'
+      ]
     });
     const page = await browser.newPage();
 
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    // เพิ่ม timeout ระดับ page
+    page.setDefaultNavigationTimeout(120000);
+
+    await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
     console.log(`📄 Title: ${await page.title()}`);
     console.log(`🌐 URL: ${page.url()}`);
 
