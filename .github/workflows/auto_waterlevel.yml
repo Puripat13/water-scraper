@@ -21,7 +21,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas chromedriver-autoinstaller
+          pip install pandas playwright
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install --with-deps
 
       - name: Run scraper with fallback proxies
         run: python scrap2.py
@@ -34,4 +38,3 @@ jobs:
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
-
