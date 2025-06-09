@@ -46,6 +46,7 @@ for proxy in PROXIES:
 
             while True:
                 rows = page.query_selector_all(".MuiTable-root tbody tr")
+                print(f"🔎 พบ {len(rows)} แถวในหน้านี้")
                 for row in rows:
                     cols = row.query_selector_all("td")
                     data = [col.inner_text().strip() for col in cols]
@@ -85,6 +86,13 @@ for proxy in PROXIES:
                 df = pd.DataFrame(all_data, columns=column_names)
                 df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
                 print(f"📁 บันทึกข้อมูลลงไฟล์ {file_path} สำเร็จ!")
+
+            else:
+                print("⚠️ โหลดหน้าเว็บได้แต่ไม่พบข้อมูลในตาราง")
+                with open("debug_page.html", "w", encoding="utf-8") as f:
+                    f.write(page.content())
+                page.screenshot(path="debug_screenshot.png", full_page=True)
+                print("📝 บันทึก debug_page.html และ debug_screenshot.png แล้ว")
 
             context.close()
             browser.close()
