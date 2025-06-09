@@ -37,11 +37,7 @@ for proxy in PROXIES:
         driver = create_driver_with_proxy(proxy)
         driver.get('https://nationalthaiwater.onwr.go.th/waterlevel')
 
-        # ตรวจสอบว่าโหลดหน้าเว็บได้จริง
-        print("📄 หน้าเว็บที่โหลด (1,000 ตัวอักษรแรก):")
-        print(driver.page_source[:1000])
-
-        WebDriverWait(driver, 5).until(
+        WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
         )
         print("✅ โหลดหน้าเว็บสำเร็จด้วย proxy นี้")
@@ -56,7 +52,6 @@ if not driver:
     print("🛑 ไม่สามารถเชื่อมต่อเว็บด้วย proxy ใด ๆ ได้")
     exit(1)
 
-# กดปุ่มยอมรับคุกกี้ (ถ้ามี)
 try:
     WebDriverWait(driver, 5).until(
         EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ยอมรับ')]"))
@@ -65,7 +60,6 @@ try:
 except:
     print("❌ ไม่มีปุ่มคุกกี้หรือคลิกไม่สำเร็จ")
 
-# ✅ รอตารางโหลด ถ้าไม่มา → เขียน debug_page.html
 try:
     WebDriverWait(driver, 20).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
@@ -77,7 +71,6 @@ except Exception:
     driver.quit()
     exit(1)
 
-# ✅ เริ่ม scrape
 start_time = time.time()
 all_data = []
 current_date = datetime.today().strftime("%d/%m/%Y")
@@ -104,13 +97,13 @@ while True:
         all_data.append(data)
 
     try:
-        next_button = WebDriverWait(driver, 2).until(
-            EC.element_to_be_clickable((By.XPATH, "//span[@title='Next Page']/button"))
+        next_button = WebDriverWait(driver, 3).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[@title='Next Page']/span[contains(@class,'MuiIconButton-label')]/.."))
         )
         if next_button.is_enabled():
             driver.execute_script("arguments[0].click();", next_button)
             print("➡️ กด Next Page แล้ว...")
-            time.sleep(0.5)
+            time.sleep(1)
         else:
             break
     except:
