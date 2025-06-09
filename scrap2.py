@@ -41,6 +41,11 @@ for proxy in PROXIES:
             EC.presence_of_element_located((By.TAG_NAME, "html"))
         )
 
+        print(f"📄 Title: {driver.title}")
+        print(f"🌐 URL: {driver.current_url}")
+        print("📄 HTML ที่โหลด (1,000 ตัวอักษรแรก):")
+        print(driver.page_source[:1000])
+
         if "access denied" in driver.page_source.lower() or "error" in driver.title.lower():
             raise Exception("เว็บไม่โหลดจริง อาจโดนบล็อก")
 
@@ -58,10 +63,10 @@ if not driver:
 
 try:
     cookie_button = WebDriverWait(driver, 5).until(
-        EC.element_to_be_clickable((
-            By.XPATH,
-            "//button[contains(text(), 'ยอมรับ') or contains(text(), 'Accept') or contains(text(), 'ตกลง')]"
-        ))
+        EC.element_to_be_clickable(                
+            (By.XPATH,
+             "//button[contains(text(), 'ยอมรับ') or contains(text(), 'Accept') or contains(text(), 'ตกลง')]")
+        )
     )
     cookie_button.click()
     print("✅ คลิกปุ่มคุกกี้แล้ว")
