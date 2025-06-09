@@ -13,22 +13,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: '3.10'
+          node-version: '18'
 
-      - name: Install dependencies
+      - name: Install Puppeteer dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pandas playwright
+          sudo apt-get update
+          sudo apt-get install -y libgbm-dev
+          npm install puppeteer json2csv dayjs
 
-      - name: Install Playwright browsers
-        run: |
-          python -m playwright install --with-deps
-
-      - name: Run scraper with fallback proxies
-        run: python scrap2.py
+      - name: Run Puppeteer scraper
+        run: node scrap2.js
 
       - name: Upload to Google Drive
         uses: mathisve/gdrive-upload-action@main
