@@ -2,7 +2,7 @@ name: Scrape Dam Water Data
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # รันทุกวัน 20:00 (เวลาไทย)
+    - cron: '0 14 * * *'  # รันทุกวัน 20:00 (เวลาไทย)
   workflow_dispatch:
 
 jobs:
