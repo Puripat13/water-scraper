@@ -2,7 +2,7 @@ name: Scrape Water Quality Data
 
 on:
   schedule:
-    - cron: '0 13 * * *'  # รันทุกวันเวลา 20:00 (เวลาไทย)
+    - cron: '0 14 * * *'  # รันทุกวันเวลา 20:00 (เวลาไทย)
   workflow_dispatch:
 
 jobs:
