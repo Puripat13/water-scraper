@@ -43,6 +43,5 @@ jobs:
           name: Water_Production.csv
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
-          supportsAllDrives: true 
           encoded: false
 
