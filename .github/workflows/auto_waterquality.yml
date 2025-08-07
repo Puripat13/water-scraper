@@ -41,7 +41,7 @@ jobs:
         uses: mathisve/gdrive-upload-action@main
         with:
           filename: ./waterquality_report.csv
-          name: Water_Production.csv
+          name: waterquality_report.csv
           folderId: ${{ secrets.FOLDER_ID }}
           credentials: ${{ secrets.GOOGLE_ACCOUNT }}
           encoded: false
