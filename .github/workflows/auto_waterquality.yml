@@ -42,6 +42,6 @@ jobs:
         with:
           filename: ./waterquality_report.csv
           name: Water_Production.csv
-          folderId: ${{ secrets.PURIPAT_ID }}
+          folderId: ${{ secrets.FOLDER_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
