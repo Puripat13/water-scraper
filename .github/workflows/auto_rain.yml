@@ -39,8 +39,8 @@ jobs:
       - name: Upload to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
-          filename: ./Water_Production.csv
-          name: Water_Production.csv
+          filename: ./tmd_7day_forecast_today.csv
+          name: tmd_7day_forecast_today.csv
           folderId: ${{ secrets.PURIPAT_ID }}
           credentials: ${{ secrets.SERVICE_ACCOUNT }}
           encoded: false
