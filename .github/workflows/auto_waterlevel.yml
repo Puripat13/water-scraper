@@ -40,7 +40,7 @@ jobs:
           pip install selenium pandas
 
       - name: Run scraper (WaterLevel)
-        run: python scrape_waterlevel.py
+        run: python scrape2.py
 
       - name: Upload CSV artifact (for debugging)
         uses: actions/upload-artifact@v4
