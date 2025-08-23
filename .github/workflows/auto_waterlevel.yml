@@ -32,7 +32,7 @@ jobs:
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
       - name: Run scraper (waterlevel)
-        run: python scarp2.py
+        run: python scrap2.py
 
       - name: Append & Upload CSV to Google Drive (Shared/My Drive)
         env:
