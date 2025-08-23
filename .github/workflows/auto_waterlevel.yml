@@ -36,7 +36,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             echo "Attempt #$i"
-            if python scarp2.py; then
+            if python scrap2.py; then
               exit 0
             fi
             echo "Sleep before retry..."
