@@ -43,9 +43,10 @@ jobs:
         env:
           TZ: Asia/Bangkok
           CSV_OUT: waterlevel_report.csv
-          PAGELOAD_TIMEOUT: '120'   # ปรับได้
+          PAGELOAD_TIMEOUT: '180'
+          FIRST_WAIT: '90'
           WAIT_SEC: '1.2'
-          FIRST_WAIT: '60'
+          NAV_RETRIES: '3'
         run: python scrap2.py
 
       - name: Upload CSV artifact (for debugging)
