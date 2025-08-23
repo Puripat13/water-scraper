@@ -30,8 +30,7 @@ jobs:
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
       - name: Run scraper
-        run: |
-          python scarp2.py
+        run: python scrap2.py
 
       - name: Upload CSV to Google Drive (Service Account)
         env:
