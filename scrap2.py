@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Scrape: https://nationalthaiwater.onwr.go.th/waterlevel
-Append -> waterlevel_report.csv (utf-8-sig)
-"""
+
 import os, time, re
 from datetime import datetime
 import pandas as pd
@@ -13,6 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 # ================== CONFIG ==================
 URL = "https://nationalthaiwater.onwr.go.th/waterlevel"
@@ -26,21 +24,40 @@ def make_driver():
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--disable-gpu")
-    opt.add_argument("--window-size=1920,1080")
+    opt.add_argument("--disable-extensions")
+    opt.add_argument("--disable-infobars")
+    opt.add_argument("--window-size=1366,768")
+    opt.add_argument("--disable-blink-features=AutomationControlled")
+    opt.add_argument("--remote-allow-origins=*")
     opt.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
+    # เร็วขึ้น: ไม่รอโหลดทุก resource
+    opt.page_load_strategy = "none"
+    # บล็อก resource หนัก
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,
+        "profile.managed_default_content_settings.fonts": 2,
+        "profile.managed_default_content_settings.plugins": 2,
+        "profile.managed_default_content_settings.popups": 2,
+        "profile.managed_default_content_settings.notifications": 2,
+        "profile.managed_default_content_settings.autoplay": 2,
+    }
+    opt.add_experimental_option("prefs", prefs)
+
     drv = webdriver.Chrome(options=opt)
-    drv.set_page_load_timeout(60)
+    drv.set_page_load_timeout(30)
+    drv.set_script_timeout(30)
     return drv
 
 def scrape_waterlevel():
     driver = make_driver()
-    start_time = time.time()
+    t0 = time.time()
     try:
         driver.get(URL)
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 25).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
         )
 
@@ -48,8 +65,10 @@ def scrape_waterlevel():
         current_date = datetime.today().strftime("%d/%m/%Y")
 
         while True:
-            time.sleep(1.2)
+            # เก็บข้อมูลในหน้านี้
             rows = driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
+            prev_first = rows[0].text if rows else ""
+
             for row in rows:
                 cols = [c.text.strip() for c in row.find_elements(By.CSS_SELECTOR, "td")]
                 if len(cols) < 5:
@@ -60,24 +79,33 @@ def scrape_waterlevel():
                     cols.append(current_date)
                 all_data.append(cols)
 
-            try:
-                next_btn = WebDriverWait(driver, 6).until(
-                    EC.element_to_be_clickable((By.XPATH, "//span[@title='Next Page']/button"))
-                )
-                if next_btn.is_enabled():
-                    driver.execute_script("arguments[0].click();", next_btn)
-                    print("➡️ Next Page")
-                    time.sleep(1.0)
-                else:
-                    break
-            except Exception:
+            # หาและคลิกปุ่ม Next
+            next_btns = driver.find_elements(By.XPATH, "//span[@title='Next Page']/button")
+            if not next_btns or not next_btns[0].is_enabled():
                 break
 
-        return all_data, start_time
-    finally:
-        driver.quit()
+            driver.execute_script("arguments[0].click();", next_btns[0])
 
-# ----- helper: เก็บเฉพาะชื่อภาษาไทย -----
+            # รอให้ตารางเปลี่ยนหน้า (หัวแถวแรกเปลี่ยน) สูงสุด ~10 วิ
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: (
+                        d.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
+                        and d.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")[0].text != prev_first
+                    )
+                )
+            except TimeoutException:
+                # ถ้าไม่เปลี่ยน ถือว่าจบ
+                break
+
+        return all_data, t0
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+# ----- helper: เก็บเฉพาะชื่อภาษาไทย (ตัดรหัส/เลข/อังกฤษก่อนหน้า) -----
 def extract_thai(text: str) -> str:
     if pd.isna(text) or text is None:
         return ""
@@ -89,6 +117,7 @@ def save_csv(all_data):
         print("⚠️ ไม่พบข้อมูลให้บันทึก")
         return
 
+    # ทำให้จำนวนคอลัมน์เท่ากัน
     max_cols = max(len(r) for r in all_data)
     all_data = [r + [''] * (max_cols - len(r)) for r in all_data]
 
@@ -103,8 +132,13 @@ def save_csv(all_data):
     file_exists = os.path.exists(CSV_OUT)
     df = pd.DataFrame(all_data, columns=headers)
 
-    # เขียนทับคอลัมน์ 'ชื่อสถานี' ให้เหลือเฉพาะภาษาไทย
+    # ชื่อสถานีเอาเฉพาะภาษาไทย
     df["ชื่อสถานี"] = df["ชื่อสถานี"].apply(extract_thai)
+
+    # แนะนำให้ลบแถวซ้ำเบื้องต้น (กันซ้ำข้ามรอบรัน)
+    dedupe_keys = [k for k in ["ชื่อสถานี", "เวลา", "วันที่เก็บข้อมูล"] if k in df.columns]
+    if dedupe_keys:
+        df.drop_duplicates(subset=dedupe_keys, keep="last", inplace=True)
 
     df.to_csv(CSV_OUT, mode="a", index=False, encoding="utf-8-sig", header=not file_exists)
     print(f"💾 บันทึก {len(df)} แถว -> {CSV_OUT}")
