@@ -1,25 +1,26 @@
-name: Auto Scrape Rain
+name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 20:00 น. เวลาไทย (UTC+7)
+    - cron: '5 13 * * *'   # 20:05 น. เวลาไทย, สลับคิวกับ Rain
   workflow_dispatch:
 
 concurrency:
-  group: auto-scrape-rain
+  group: auto-scrape-waterlevel
   cancel-in-progress: false
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
 
     env:
       TZ: Asia/Bangkok
-      CSV_OUT: tmd_7day_forecast_today.csv
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "false"   # ปิดอัปโหลดในสคริปต์กันซ้ำ
+      CSV_OUT: waterlevel_report.csv
+      PAGELOAD_TIMEOUT: '60'
+      WAIT_SEC: '1.2'
 
     steps:
       - name: Checkout
@@ -36,16 +37,15 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas beautifulsoup4 lxml \
-                      google-api-python-client google-auth google-auth-httplib2
+          pip install selenium pandas
 
-      - name: Run scraper (Rain)
-        run: python scrap1.py
+      - name: Run scraper (WaterLevel)
+        run: python scrape_waterlevel.py
 
       - name: Upload CSV artifact (for debugging)
         uses: actions/upload-artifact@v4
         with:
-          name: rain-csv
+          name: waterlevel-csv
           path: ${{ env.CSV_OUT }}
           if-no-files-found: warn
           compression-level: 0
@@ -54,7 +54,7 @@ jobs:
         if: ${{ hashFiles(env.CSV_OUT) != '' }}
         env:
           DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # JSON ทั้งก้อน
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
           CSV_OUT: ${{ env.CSV_OUT }}
         run: |
           python - <<'PY'
@@ -64,7 +64,7 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-          CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
+          CSV_OUT = os.getenv("CSV_OUT", "waterlevel_report.csv")
           FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
           SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
 
@@ -75,10 +75,8 @@ jobs:
           creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-          # verify folder access (incl. Shared Drive)
           drive.files().get(fileId=FOLDER_ID, fields="id,name", supportsAllDrives=True).execute()
 
-          # find existing file in folder
           fname = os.path.basename(CSV_OUT).replace("'", "\\'")
           q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
           res = drive.files().list(
@@ -91,10 +89,9 @@ jobs:
           if files:
               fid = files[0]["id"]; mime = files[0]["mimeType"]
               if mime.startswith("application/vnd.google-apps"):
-                  print("❌ Target is Google Sheets; need Sheets API append. (บอกได้ เดี๋ยวผมปรับให้)", file=sys.stderr)
+                  print("❌ Target is Google Sheets; need Sheets API append.", file=sys.stderr)
                   sys.exit(2)
 
-              # download old csv
               request = drive.files().get_media(fileId=fid)
               fh = io.BytesIO()
               from googleapiclient.http import MediaIoBaseDownload
@@ -108,20 +105,10 @@ jobs:
               except Exception:
                   fh.seek(0); old_df = pd.read_csv(fh, encoding="utf-8-sig")
 
-              all_df = pd.concat([old_df, new_df], ignore_index=True)
-              # de-dup and sort if DateTime/Province present
-              if set(["Province","DateTime"]).issubset(all_df.columns):
-                  all_df.drop_duplicates(subset=["Province","DateTime"], keep="last", inplace=True)
-                  try:
-                      all_df["DateTime"] = pd.to_datetime(all_df["DateTime"], errors="coerce")
-                      all_df.sort_values("DateTime", inplace=True)
-                  except Exception:
-                      pass
-              else:
-                  all_df.drop_duplicates(keep="last", inplace=True)
-
+              all_df = pd.concat([old_df, new_df], ignore_index=True).drop_duplicates(keep="last")
               tmp = "__merged_out.csv"
               all_df.to_csv(tmp, index=False, encoding="utf-8-sig")
+
               media = MediaFileUpload(tmp, mimetype="text/csv", resumable=True)
               drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
               print(f"✅ Appended & updated: {fname} (fileId={fid})")
