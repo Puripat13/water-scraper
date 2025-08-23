@@ -1,94 +1,135 @@
-name: Scrape Waterlevel
+name: Auto Scrape Waterlevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 20:00 Asia/Bangkok = 13:00 UTC
-  workflow_dispatch:        # เผื่อกดรันเองได้
+    - cron: '0 13 * * *'   # 20:00 น. เวลาไทย (UTC+7)
+  workflow_dispatch:
 
 jobs:
-  run-and-upload:
+  run-scraper:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Bangkok
+      CSV_OUT: waterlevel_report.csv
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "false"   # กันซ้ำจากในสคริปต์ (เผื่อเผลอเปิดไว้)
 
     steps:
-      - name: Check out repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Google Chrome
+      - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Show Chrome version
-        run: chrome --version || google-chrome --version || chromium-browser --version
-
-      - name: Install Python dependencies
+      - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      - name: Run scraper
-        run: python scrap2.py
+      - name: Run scraper (waterlevel)
+        run: python scarp2.py
 
-      - name: Upload CSV to Google Drive (Service Account)
+      - name: Append & Upload CSV to Google Drive (Shared/My Drive)
         env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
           DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
-          CSV_PATH: waterlevel_report.csv
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # เนื้อหา JSON ทั้งก้อน
+          CSV_OUT: ${{ env.CSV_OUT }}
         run: |
           python - <<'PY'
-          import os, json, time
-          from google.oauth2 import service_account
+          import os, io, json, sys
+          import pandas as pd
+          from google.oauth2.service_account import Credentials
           from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-          from googleapiclient.errors import HttpError
+          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-          SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-          FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
-          CSV_PATH = os.environ.get("CSV_PATH", "waterlevel_report.csv")
-          CSV_MIMETYPE = "text/csv"
+          CSV_OUT = os.getenv("CSV_OUT", "waterlevel_report.csv")
+          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
+          SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
 
-          if not SA_JSON:
-            raise RuntimeError("Missing secret: GOOGLE_SERVICE_ACCOUNT_JSON")
-          if not FOLDER_ID:
-            raise RuntimeError("Missing secret: DRIVE_FOLDER_ID")
-          if not os.path.exists(CSV_PATH):
-            raise FileNotFoundError(f"CSV not found: {CSV_PATH}")
+          if not os.path.exists(CSV_OUT):
+              print(f"❌ Not found local CSV: {CSV_OUT}", file=sys.stderr); sys.exit(1)
 
-          creds = service_account.Credentials.from_service_account_info(
-              json.loads(SA_JSON),
-              scopes=["https://www.googleapis.com/auth/drive"]
-          )
-          service = build("drive", "v3", credentials=creds, cache_discovery=False)
+          # สร้าง Drive service (Service Account)
+          info = json.loads(SA_JSON)
+          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-          # ตรวจสอบว่าโฟลเดอร์เข้าถึงได้
-          service.files().get(fileId=FOLDER_ID, fields="id,name", supportsAllDrives=True).execute()
+          # ตรวจสอบโฟลเดอร์ (รองรับ Shared Drive)
+          drive.files().get(fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True).execute()
 
-          # หาไฟล์ชื่อเดียวกันในโฟลเดอร์
-          from urllib.parse import quote
-          name = os.path.basename(CSV_PATH).replace("'", "\\'")
-          q = f"name = '{name}' and '{FOLDER_ID}' in parents and trashed = false"
-          res = service.files().list(
-              q=q, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True
+          # หาไฟล์เดิมในโฟลเดอร์
+          fname = os.path.basename(CSV_OUT).replace("'", "\\'")
+          q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
+          res = drive.files().list(
+              q=q, fields="files(id,name,mimeType)",
+              supportsAllDrives=True, includeItemsFromAllDrives=True
           ).execute()
           files = res.get("files", [])
 
-          media = MediaFileUpload(CSV_PATH, mimetype=CSV_MIMETYPE, resumable=True)
+          # โหลดผลใหม่จากรันนี้
+          new_df = pd.read_csv(CSV_OUT)
 
           if files:
-            file_id = files[0]["id"]
-            updated = service.files().update(
-                fileId=file_id, media_body=media, supportsAllDrives=True
-            ).execute()
-            print(f"✅ Updated existing file (id={updated.get('id')})")
+              fid = files[0]["id"]
+              mime = files[0]["mimeType"]
+
+              if mime.startswith("application/vnd.google-apps"):
+                  print("❌ พบไฟล์เป็น Google Sheets; ต้องใช้ Sheets API ในการ append", file=sys.stderr)
+                  sys.exit(2)
+
+              # ดาวน์โหลดไฟล์เดิม
+              request = drive.files().get_media(fileId=fid)
+              fh = io.BytesIO()
+              downloader = MediaIoBaseDownload(fh, request)
+              done = False
+              while not done:
+                  status, done = downloader.next_chunk()
+              fh.seek(0)
+              try:
+                  old_df = pd.read_csv(fh)
+              except Exception:
+                  fh.seek(0)
+                  old_df = pd.read_csv(fh, encoding="utf-8-sig")
+
+              # รวม + ลบซ้ำ
+              all_df = pd.concat([old_df, new_df], ignore_index=True)
+
+              # ถ้ามีคอลัมน์ภาษาไทยตามสคริปต์ waterlevel ให้ใช้คีย์เหล่านี้เพื่อลบซ้ำ
+              keys = [c for c in ["ชื่อสถานี","เวลา","วันที่เก็บข้อมูล"] if c in all_df.columns]
+              if keys:
+                  all_df.drop_duplicates(subset=keys, keep="last", inplace=True)
+              else:
+                  all_df.drop_duplicates(keep="last", inplace=True)
+
+              # จัดเรียงเวลา (ถ้ามี)
+              for col in ["วันที่เก็บข้อมูล","เวลา","DateTime","วันที่เวลา"]:
+                  if col in all_df.columns:
+                      try:
+                          all_df[col] = pd.to_datetime(all_df[col], errors="coerce")
+                      except Exception:
+                          pass
+              sort_cols = [c for c in ["วันที่เก็บข้อมูล","เวลา","DateTime"] if c in all_df.columns]
+              if sort_cols:
+                  all_df.sort_values(sort_cols, inplace=True)
+
+              tmp_path = "__merged_out.csv"
+              all_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+
+              # อัปเดตไฟล์เดิม
+              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
+              drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
+              print(f"✅ Appended & updated: {fname} (fileId={fid})")
           else:
-            file_metadata = {"name": os.path.basename(CSV_PATH), "parents": [FOLDER_ID]}
-            created = service.files().create(
-                body=file_metadata, media_body=media, fields="id,webViewLink", supportsAllDrives=True
-            ).execute()
-            print(f"✅ Created new file (id={created.get('id')})")
-            if created.get("webViewLink"):
-                print(f"🔗 Open: {created['webViewLink']}")
+              # ไม่มีไฟล์เดิม → สร้างใหม่
+              meta = {"name": os.path.basename(CSV_OUT), "parents": [FOLDER_ID]}
+              media = MediaFileUpload(CSV_OUT, mimetype="text/csv", resumable=True)
+              created = drive.files().create(
+                  body=meta, media_body=media, fields="id", supportsAllDrives=True
+              ).execute()
+              print(f"✅ Created new: {CSV_OUT} (fileId={created['id']})")
           PY
