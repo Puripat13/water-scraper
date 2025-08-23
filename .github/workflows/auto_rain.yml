@@ -10,6 +10,9 @@ jobs:
   run-scraper:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      TZ: Asia/Bangkok
+      CSV_OUT: tmd_7day_forecast_today.csv   # ให้สคริปต์เขียนไฟล์ชื่อนี้
 
     steps:
       - name: Checkout
@@ -26,7 +29,62 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
       - name: Run scraper
-        run: python scrap1.py
+        run: python scrap1.py   # แก้ชื่อไฟล์ถ้าไม่ใช่ scrap1.py
+
+      - name: Upload to Google Drive (Shared Drive)
+        env:
+          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}       # ใช้ชื่อ secret เดิมของคุณ
+          GDRIVE_SA_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # JSON ตรง ๆ (ไม่ base64)
+          CSV_OUT: ${{ env.CSV_OUT }}
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from google.oauth2.service_account import Credentials
+
+          CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
+          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
+          SA_JSON = os.environ["GDRIVE_SA_JSON"]
+
+          # ตรวจไฟล์ที่จะอัปโหลด
+          if not os.path.exists(CSV_OUT):
+              print(f"❌ Not found: {CSV_OUT}", file=sys.stderr); sys.exit(1)
+
+          info = json.loads(SA_JSON)
+          creds = Credentials.from_service_account_info(
+              info, scopes=["https://www.googleapis.com/auth/drive"]
+          )
+          service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          # ยืนยันเข้าถึงโฟลเดอร์ (รองรับ Shared Drive)
+          service.files().get(
+              fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True
+          ).execute()
+
+          # หาไฟล์ชื่อเดียวกันในโฟลเดอร์
+          fname = os.path.basename(CSV_OUT).replace("'", "\\'")
+          q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
+          res = service.files().list(
+              q=q, fields="files(id,name)",
+              supportsAllDrives=True, includeItemsFromAllDrives=True
+          ).execute()
+          files = res.get("files", [])
+          media = MediaFileUpload(CSV_OUT, mimetype="text/csv", resumable=True)
+
+          if files:
+              fid = files[0]["id"]
+              service.files().update(
+                  fileId=fid, media_body=media, supportsAllDrives=True
+              ).execute()
+              print(f"✅ Updated: {fname} (fileId={fid})")
+          else:
+              meta = {"name": fname, "parents": [FOLDER_ID]}
+              created = service.files().create(
+                  body=meta, media_body=media, fields="id", supportsAllDrives=True
+              ).execute()
+              print(f"✅ Created: {fname} (fileId={created['id']})")
+          PY
