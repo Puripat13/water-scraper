@@ -1,4 +1,4 @@
-nname: Auto Scrape Rain
+name : Auto Scrape Rain
 
 on:
   schedule:
