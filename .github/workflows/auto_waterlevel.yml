@@ -40,6 +40,12 @@ jobs:
           pip install selenium pandas
 
       - name: Run scraper (WaterLevel)
+        env:
+          TZ: Asia/Bangkok
+          CSV_OUT: waterlevel_report.csv
+          PAGELOAD_TIMEOUT: '120'   # ปรับได้
+          WAIT_SEC: '1.2'
+          FIRST_WAIT: '60'
         run: python scrap2.py
 
       - name: Upload CSV artifact (for debugging)
