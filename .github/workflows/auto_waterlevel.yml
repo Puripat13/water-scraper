@@ -1,9 +1,8 @@
-name: Auto Scrape WaterLevel
+name: Scrape Waterlevel (Daily)
 
 on:
   schedule:
-    # 13:00 UTC = 20:00 น. เวลาไทย (+7)
-    - cron: '0 13 * * *'
+    - cron: "0 13 * * *"  # รันทุกวัน 20:00 (เวลาไทย = UTC+7)
   workflow_dispatch:
 
 jobs:
@@ -13,16 +12,16 @@ jobs:
     env:
       TZ: Asia/Bangkok
       CSV_OUT: waterlevel_report.csv
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "false"   # กันซ้ำ: ปิดอัปโหลดในสคริปต์
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -32,129 +31,37 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Setup Google Chrome
-        uses: browser-actions/setup-chrome@v1
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg apt-transport-https ca-certificates unzip
+          wget -qO- https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-linux-signing-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | \
+            sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
 
-      - name: Install Python packages
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            selenium==4.23.1 \
-            pandas==2.2.2 \
-            google-api-python-client==2.137.0 \
-            google-auth==2.35.0 \
-            google-auth-httplib2==0.2.0
+          pip install -r requirements.txt
 
-      - name: Run scraper
-        # ⚠️ ปรับชื่อไฟล์ให้ตรงกับของจริง
-        run: python scrap2.py
-
-      - name: Append & Upload CSV to Google Drive (Shared Drive)
-        # ทำงานเฉพาะเมื่อตั้งค่าทั้งสอง Secrets แล้ว
-        if: ${{ secrets.PURIPAT_ID != '' && secrets.SERVICE_ACCOUNT != '' }}
-        env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
-          CSV_OUT: ${{ env.CSV_OUT }}
+      - name: Write Service Account JSON (from Secrets)
+        if: ${{ secrets.SA_JSON != '' && secrets.DRIVE_FOLDER_ID != '' }}
         run: |
-          python - <<'PY'
-          import os, io, json, sys
-          import pandas as pd
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+          echo "${{ secrets.SA_JSON }}" > service_account.json
+          chmod 600 service_account.json
 
-          CSV_OUT = os.getenv("CSV_OUT", "waterlevel_report.csv")
-          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
-          SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
+      - name: Run Scraper
+        env:
+          SERVICE_ACCOUNT_FILE: "service_account.json"
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          GOOGLE_CHROME_BIN: "/usr/bin/google-chrome"
+        run: |
+          python scrape_waterlevel.py
 
-          if not os.path.exists(CSV_OUT):
-              print(f"❌ Not found local CSV: {CSV_OUT}", file=sys.stderr); sys.exit(1)
-
-          info = json.loads(SA_JSON)
-          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # ยืนยันเข้าถึงโฟลเดอร์ (Shared Drive)
-          drive.files().get(fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True).execute()
-
-          # หาไฟล์เดิมในโฟลเดอร์
-          fname = os.path.basename(CSV_OUT).replace("'", "\\'")
-          q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
-          res = drive.files().list(
-              q=q, fields="files(id,name,mimeType)",
-              supportsAllDrives=True, includeItemsFromAllDrives=True
-          ).execute()
-          files = res.get("files", [])
-
-          # ข้อมูลรันล่าสุด
-          new_df = pd.read_csv(CSV_OUT, encoding="utf-8-sig")
-
-          if files:
-              fid = files[0]["id"]
-              mime = files[0]["mimeType"]
-
-              if mime.startswith("application/vnd.google-apps"):
-                  print("❌ ไฟล์ปลายทางเป็น Google Sheets; ต้องใช้ Sheets API ในการ append", file=sys.stderr)
-                  sys.exit(2)
-
-              # ดาวน์โหลดไฟล์เดิม
-              request = drive.files().get_media(fileId=fid)
-              fh = io.BytesIO()
-              downloader = MediaIoBaseDownload(fh, request)
-              done = False
-              while not done:
-                  status, done = downloader.next_chunk()
-              fh.seek(0)
-              try:
-                  old_df = pd.read_csv(fh, encoding="utf-8-sig")
-              except Exception:
-                  fh.seek(0)
-                  old_df = pd.read_csv(fh)
-
-              # รวม + ลบซ้ำอย่างฉลาด (ใช้คีย์ไทยให้ตรงกับไฟล์ scrape)
-              all_df = pd.concat([old_df, new_df], ignore_index=True)
-
-              key_opts = [
-                  ['ชื่อสถานี', 'เวลา', 'วันที่เก็บข้อมูล'],
-                  ['ชื่อสถานี', 'ที่ตั้ง', 'เวลา', 'วันที่เก็บข้อมูล'],
-              ]
-              used = None
-              for keys in key_opts:
-                  if set(keys).issubset(all_df.columns):
-                      all_df.drop_duplicates(subset=keys, keep='last', inplace=True)
-                      used = keys
-                      break
-              if not used:
-                  all_df.drop_duplicates(keep='last', inplace=True)
-
-              # จัดเรียงตาม 'วันที่เก็บข้อมูล' + 'เวลา' ถ้ามี
-              if {'วันที่เก็บข้อมูล','เวลา'}.issubset(all_df.columns):
-                  try:
-                      dt = pd.to_datetime(all_df['วันที่เก็บข้อมูล'] + ' ' + all_df['เวลา'], errors='coerce', dayfirst=True)
-                      all_df.insert(0, 'DateTime', dt)  # แทรกคอลัมน์ไว้ใช้สืบค้นในอนาคต
-                      all_df.sort_values('DateTime', inplace=True)
-                  except Exception:
-                      pass
-
-              tmp_path = "__merged_out.csv"
-              all_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
-
-              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
-              drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Appended & updated: {fname} (fileId={fid})")
-
-          else:
-              # ยังไม่มีไฟล์เดิม -> สร้างใหม่
-              meta = {"name": os.path.basename(CSV_OUT), "parents": [FOLDER_ID]}
-              media = MediaFileUpload(CSV_OUT, mimetype="text/csv", resumable=True)
-              created = drive.files().create(
-                  body=meta, media_body=media, fields="id", supportsAllDrives=True
-              ).execute()
-              print(f"✅ Created new: {CSV_OUT} (fileId={created['id']})")
-          PY
-
-      - name: Upload CSV as Artifact (backup)
+      - name: Upload CSV as Artifact (optional backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
