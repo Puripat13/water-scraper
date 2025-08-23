@@ -1,4 +1,4 @@
-name: Scrape Waterlevel and Upload to Google Drive (Daily 20:00 ICT)
+name: Scrape Waterlevel
 
 on:
   schedule:
