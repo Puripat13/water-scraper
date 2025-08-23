@@ -4,7 +4,6 @@
 import os, time, random
 from datetime import datetime
 import pandas as pd
-from bs4 import BeautifulSoup
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -18,6 +17,7 @@ HOME = os.getenv("TMD_HOME", "https://www.tmd.go.th")
 CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
 
 
+# ============ Driver (ปรับเพื่อลดโหลด) ============
 def make_driver():
     opt = Options()
     opt.add_argument("--headless=new")
@@ -33,7 +33,21 @@ def make_driver():
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
+    # โหลดแบบไม่ต้องรอทุก resource
     opt.page_load_strategy = "none"
+
+    # บล็อค resource หนัก
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,
+        "profile.managed_default_content_settings.fonts": 2,
+        "profile.managed_default_content_settings.plugins": 2,
+        "profile.managed_default_content_settings.popups": 2,
+        "profile.managed_default_content_settings.notifications": 2,
+        "profile.managed_default_content_settings.autoplay": 2,
+    }
+    opt.add_experimental_option("prefs", prefs)
+
     drv = webdriver.Chrome(options=opt)
     drv.set_page_load_timeout(20)
     drv.set_script_timeout(20)
@@ -64,9 +78,11 @@ def click_if_present(driver, by, selector, timeout=6):
         return False
 
 
+# ============ Entry / Cookie ============
 def bypass_eventday_cookie(driver):
+    # ปุ่มเข้าเว็บ / ยอมรับคุกกี้ (ถ้ามี)
     for xp in ["//button[contains(text(),'เข้าสู่เว็บไซต์')]", "//a[contains(text(),'เข้าสู่เว็บไซต์')]"]:
-        if click_if_present(driver, By.XPATH, xp, 5):
+        if click_if_present(driver, By.XPATH, xp, 4):
             break
     for xp in ["//button[contains(text(),'ยอมรับทั้งหมด')]", "//button[contains(text(),'ยอมรับ')]"]:
         if click_if_present(driver, By.XPATH, xp, 3):
@@ -74,11 +90,12 @@ def bypass_eventday_cookie(driver):
 
 
 def open_home_ready(driver):
-    for _ in range(4):
-        safe_get(driver, HOME, timeout=15)
+    for _ in range(3):
+        safe_get(driver, HOME, timeout=12)
         bypass_eventday_cookie(driver)
         try:
-            WebDriverWait(driver, 40).until(
+            # แค่รอให้ select2 container โผล่
+            WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.ID, "select2-province-selector-container"))
             )
             return True
@@ -88,22 +105,28 @@ def open_home_ready(driver):
                 driver.refresh()
             except Exception:
                 pass
-            time.sleep(1.2)
-
-    with open("debug_tmd_home.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
+    # debug dump เผื่อใช้ดูทีหลัง
     try:
+        with open("debug_tmd_home.html", "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
         driver.save_screenshot("debug_tmd_home.png")
     except Exception:
         pass
     raise TimeoutError("ไม่พบ select2 จังหวัดบนหน้าแรก TMD")
 
 
-def collect_all_select2_items(driver):
-    WebDriverWait(driver, 12).until(
+# ============ Select2 Helpers (เร็วขึ้น) ============
+def _collect_select2_mapping_fast(driver):
+    """
+    เปิด dropdown ครั้งเดียว, scroll ให้สุด, เก็บ mapping (name -> value)
+    เพื่อต่อไปจะ set ผ่าน JS โดยตรง (เร็วกว่าเปิด/ค้น/คลิกทุกรอบ)
+    """
+    # เปิดกล่อง
+    WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.ID, "select2-province-selector-container"))
     ).click()
 
+    # ช่องค้นหาโผล่ = dropdown เปิดแล้ว
     WebDriverWait(driver, 10).until(
         EC.visibility_of_element_located((By.CSS_SELECTOR, "input.select2-search__field"))
     )
@@ -111,26 +134,67 @@ def collect_all_select2_items(driver):
         EC.presence_of_element_located((By.ID, "select2-province-selector-results"))
     )
 
-    last, stable = -1, 0
+    # scroll จนรายการคงที่
+    stable = 0
+    last_cnt = -1
     while True:
         items = results.find_elements(By.CSS_SELECTOR, "li.select2-results__option")
         cnt = len(items)
-        if cnt == last:
+        if cnt == last_cnt:
             stable += 1
             if stable >= 2:
                 break
         else:
             stable = 0
-            last = cnt
+            last_cnt = cnt
         driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", results)
-        time.sleep(0.25)
+        time.sleep(0.15)
 
-    names = [i.text.strip() for i in items if i.text.strip()]
+    mapping = {}
+    for li in items:
+        name = li.text.strip()
+        if not name:
+            continue
+        # พยายามเดาค่า value จาก id ของ li (pattern ทั่วไป select2-<select>-result-*-<value>)
+        li_id = li.get_attribute("id") or ""
+        value = li_id.split("-")[-1] if "-" in li_id else name
+        mapping[name] = value
+
+    # ปิด dropdown
     driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-    return names
+    return mapping
 
 
-def select_province(driver, name):
+def _js_set_select2_value(driver, value):
+    """
+    พยายาม set ค่า select2 ผ่าน JS ให้เร็วสุด
+    สมมติ select element จริงชื่อ 'province-selector' (กรณีเว็บเปลี่ยน อาจไม่สำเร็จ → fallback)
+    """
+    js = """
+    var sel = document.getElementById('province-selector');
+    if (!sel) return false;
+    sel.value = arguments[0];
+    var ev = new Event('change', { bubbles: true });
+    sel.dispatchEvent(ev);
+    return true;
+    """
+    try:
+        return bool(driver.execute_script(js, value))
+    except Exception:
+        return False
+
+
+def select_province_fast(driver, name, mapping):
+    """
+    เร็ว: ใช้ JS set value ถ้าไม่ได้ค่อย fallback ไปวิธีเดิม (ค้นหา+คลิก)
+    """
+    value = mapping.get(name)
+    if value and _js_set_select2_value(driver, value):
+        # รอให้คอนเทนต์โหลด/อัพเดต
+        time.sleep(0.15)
+        return True
+
+    # --- fallback เดิม (ค้นหา+คลิก) ---
     WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.ID, "select2-province-selector-container"))
     ).click()
@@ -139,73 +203,109 @@ def select_province(driver, name):
     )
     search.clear()
     search.send_keys(name)
-    time.sleep(0.35)
-    xp = ("//li[contains(@class,'select2-results__option') and "
-          "normalize-space(text())='{0}']").format(name)
-    WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, xp)))
-    js_click(driver, driver.find_element(By.XPATH, xp))
-    WebDriverWait(driver, 12).until(lambda d: name in d.page_source)
+    # รอสั้นๆ ให้ผลลัพธ์กรองเสร็จ
+    WebDriverWait(driver, 5).until(
+        EC.presence_of_element_located((By.XPATH,
+            ("//li[contains(@class,'select2-results__option') and "
+             "normalize-space(text())='{0}']").format(name)))
+    )
+    js_click(driver, driver.find_element(
+        By.XPATH,
+        ("//li[contains(@class,'select2-results__option') and "
+         "normalize-space(text())='{0}']").format(name)
+    ))
+    # ปล่อยให้หน้าอัปเดต
+    time.sleep(0.1)
+    return True
 
 
-def parse_today(driver, name):
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    for card in soup.find_all("div", class_="card card-shadow text-center"):
-        head = card.find("div", class_="font-small")
-        if not head or head.get_text(strip=True) != "วันนี้":
+# ============ Parse "วันนี้" แบบเร็ว (ไม่ใช้ bs4) ============
+def parse_today_fast(driver, province_name):
+    # card วันนี้
+    # หา card ที่มีหัว "วันนี้"
+    cards = driver.find_elements(By.CSS_SELECTOR, "div.card.card-shadow.text-center")
+    for c in cards:
+        try:
+            head = c.find_element(By.CSS_SELECTOR, "div.font-small")
+            if head.text.strip() != "วันนี้":
+                continue
+
+            date_txt = c.find_element(By.CSS_SELECTOR, "div.font-tiny.text-dark2").text.strip()
+
+            # อุณหภูมิ สูง/ต่ำ
+            twrap = c.find_element(By.CSS_SELECTOR, "div.d-flex.justify-content-around.sub-heading")
+            dvals = twrap.find_elements(By.CSS_SELECTOR, "div")
+            tmax = dvals[0].text.strip() if len(dvals) > 0 else ""
+            tmin = dvals[2].text.strip() if len(dvals) > 2 else ""
+
+            tinys = c.find_elements(By.CSS_SELECTOR, "div.font-tiny.text-center")
+            cond = tinys[0].text.strip() if len(tinys) > 0 else ""
+            rain = tinys[1].text.strip() if len(tinys) > 1 else ""
+            wind = ""
+            try:
+                wind = c.find_element(By.CSS_SELECTOR, "span.font-tiny.ps-1").text.strip()
+            except Exception:
+                pass
+
+            return {
+                "จังหวัด/รายการ": province_name,
+                "วันที่": date_txt,
+                "อุณหภูมิสูงสุด": tmax,
+                "อุณหภูมิต่ำสุด": tmin,
+                "สภาพอากาศ": cond,
+                "โอกาสฝน": rain,
+                "ลม": wind,
+                "เวลาบันทึก": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        except Exception:
             continue
-        date_txt = card.find("div", class_="font-tiny text-dark2").get_text(strip=True)
-        temps = card.find("div", class_="d-flex justify-content-around sub-heading")
-        dv = temps.find_all("div") if temps else []
-        tmax = dv[0].get_text(strip=True) if len(dv) > 0 else ""
-        tmin = dv[2].get_text(strip=True) if len(dv) > 2 else ""
-        tinys = card.find_all("div", class_="font-tiny text-center")
-        cond  = tinys[0].get_text(strip=True) if len(tinys) > 0 else ""
-        rain  = tinys[1].get_text(strip=True) if len(tinys) > 1 else ""
-        wind_el = card.find("span", class_="font-tiny ps-1")
-        wind = wind_el.get_text(strip=True) if wind_el else ""
-        return {
-            "จังหวัด/รายการ": name,
-            "วันที่": date_txt,
-            "อุณหภูมิสูงสุด": tmax,
-            "อุณหภูมิต่ำสุด": tmin,
-            "สภาพอากาศ": cond,
-            "โอกาสฝน": rain,
-            "ลม": wind,
-            "เวลาบันทึก": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
     return None
 
 
+# ============ Main ============
 def main():
     driver = make_driver()
     rows, failed = [], []
     try:
         open_home_ready(driver)
-        names = collect_all_select2_items(driver)
+
+        # เตรียม mapping สำหรับเลือกจังหวัดด้วย JS (เปิด dropdown แค่ครั้งเดียว)
+        mapping = _collect_select2_mapping_fast(driver)
+
+        names = list(mapping.keys())
         print(f"รายการจาก select2 ทั้งหมด: {len(names)} รายการ")
 
         for i, name in enumerate(names, 1):
             ok = False
             for attempt in range(2):
                 try:
-                    select_province(driver, name)
-                    row = parse_today(driver, name)
+                    # เลือกจังหวัดแบบเร็ว
+                    select_province_fast(driver, name, mapping)
+
+                    # รอให้ card "วันนี้" โผล่จริง ๆ (หน้าเพิ่งอัปเดต)
+                    WebDriverWait(driver, 8).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.card.card-shadow.text-center"))
+                    )
+
+                    row = parse_today_fast(driver, name)
                     if row:
                         rows.append(row); ok = True
-                        print(f"[{i}/{len(names)}] {name} ✔")
+                        if i % 10 == 0 or i <= 5:
+                            print(f"[{i}/{len(names)}] {name} ✔")
                         break
                 except Exception as e:
                     if attempt == 0:
+                        # refresh เร็วๆ ครั้งเดียว
                         try:
-                            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                        except:
+                            driver.execute_script("window.stop();")
+                            driver.refresh()
+                        except Exception:
                             pass
-                        time.sleep(0.7)
                     else:
                         print(f"[{i}/{len(names)}] {name} ✖ {e}")
-                time.sleep(random.uniform(0.3, 0.8))
             if not ok:
                 failed.append(name)
+
     finally:
         try:
             driver.quit()
