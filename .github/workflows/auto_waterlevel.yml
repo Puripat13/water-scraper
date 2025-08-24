@@ -2,14 +2,16 @@ name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    # รันทุกวันเวลา 20:00 ประเทศไทย (UTC+7) => 13:00 UTC
+    # รันทุกวันเวลา 20:00 ประเทศไทย (UTC+7) = 13:00 UTC
     - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"   # ให้ stdout ของ Python ไหลทันที เห็น log เต็มๆ
 
     steps:
       - name: Checkout
@@ -38,6 +40,7 @@ jobs:
 
       - name: Install Python packages
         run: |
+          set -eux
           python -m pip install --upgrade pip
           pip install selenium pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
@@ -45,8 +48,20 @@ jobs:
         run: |
           set -eux
           python scrap2.py
+          test -f waterlevel_report.csv
+
+      # เก็บ CSV เป็น artifact สำหรับดีบักย้อนหลัง
+      - name: Upload artifact (CSV)
+        if: always() && hashFiles('waterlevel_report.csv') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: waterlevel_report
+          path: waterlevel_report.csv
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload to Google Drive
+        if: success() && hashFiles('waterlevel_report.csv') != ''
         uses: mathisve/gdrive-upload-action@main
         with:
           filename: ./waterlevel_report.csv
