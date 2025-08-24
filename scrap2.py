@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, time, re, sys, math
+import os, time, re, sys
 from datetime import datetime
 import pandas as pd
 
@@ -12,9 +12,7 @@ from selenium.common.exceptions import TimeoutException
 
 URL = "https://nationalthaiwater.onwr.go.th/waterlevel"
 CSV_OUT = "waterlevel_report.csv"
-
-# งบเวลารวมของการ scrape (วินาที) - ตั้งจาก ENV ได้ เช่น 600 = 10 นาที
-SCRAPE_BUDGET_SEC = int(os.environ.get("SCRAPE_BUDGET_SEC", "600"))
+WAIT = 30
 
 def make_driver():
     opt = Options()
@@ -23,21 +21,19 @@ def make_driver():
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--disable-gpu")
-    opt.add_argument("--window-size=1366,840")
+    opt.add_argument("--window-size=1366,800")
     opt.add_argument("--disable-blink-features=AutomationControlled")
     opt.add_argument("--lang=th-TH,th")
     opt.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
     drv = webdriver.Chrome(options=opt)
     drv.set_page_load_timeout(60)
     return drv
 
-# ---------- Tools around the table/paginator ----------
-def find_rich_table_locator(driver):
-    """ลองหลาย selector แล้วเลือกตารางที่ 'มีแถวมากสุด' เพื่อเล็งถูกตัว"""
-    cands = [
+def pick_richest_table_locator(driver):
+    """ลองทุก selector ที่เจอตาราง แล้วเลือกตัวที่จำนวนแถว 'มากที่สุด'"""
+    candidates = [
         (By.CSS_SELECTOR, "div.MuiDataGrid-virtualScrollerRenderZone .MuiDataGrid-row"),
         (By.CSS_SELECTOR, "div[role='rowgroup'] [role='row']"),
         (By.CSS_SELECTOR, ".MuiTable-root tbody tr"),
@@ -45,139 +41,138 @@ def find_rich_table_locator(driver):
     ]
     best = None
     best_n = -1
-    for by, sel in cands:
+    for by, sel in candidates:
         try:
-            WebDriverWait(driver, 6).until(EC.presence_of_element_located((by, sel)))
-            n = len(driver.find_elements(by, sel))
-            if n > best_n:
-                best_n = n
-                best = (by, sel)
-        except Exception:
-            pass
+            WebDriverWait(driver, 8).until(EC.presence_of_element_located((by, sel)))
+        except TimeoutException:
+            continue
+        rows = driver.find_elements(by, sel)
+        n = len(rows)
+        if n > best_n:
+            best_n = n
+            best = (by, sel)
     if not best:
         raise TimeoutException("ไม่พบตารางข้อมูลบนหน้า")
     print(f"[INFO] ใช้ locator: {best} (แถวเริ่มต้น {best_n})")
     return best
 
-def find_paginator_root(driver):
-    """หา paginator หลักของตาราง (โซนแสดง '1–100 of N' และปุ่ม next)"""
-    sels = [
-        ".MuiTablePagination-root",
-        "div.MuiDataGrid-footerContainer",
-        "div[class*='MuiTablePagination']",
-    ]
-    for sel in sels:
-        els = driver.find_elements(By.CSS_SELECTOR, sel)
-        for e in els:
-            if e.is_displayed():
-                return e
-    return None
-
-def set_rows_per_page_100(pager):
-    """พยายามตั้ง Rows per page = 100 ถ้าเมนูมีตัวเลือกนี้"""
+def set_rows_per_page_100(driver):
+    """พยายามตั้ง Rows per page = 100 (ถ้ามี)"""
     try:
-        # ปุ่มเปิดเมนู page-size มักเป็น div[role=button] หรือ .MuiSelect-select
-        triggers = pager.find_elements(By.XPATH, ".//*[(@role='button' or contains(@class,'MuiSelect-select'))]")
+        # MUI pagination select
+        # หา select ที่มีค่า 10/25/50/100
+        options_xpath = "//ul//li[normalize-space(.)='100']"
+        # เปิดเมนู page size
+        triggers = driver.find_elements(By.XPATH, "//div[contains(@class,'MuiTablePagination') or contains(@class,'MuiDataGrid')]//div[contains(@class,'MuiSelect-select') or @role='button']")
         for trg in triggers:
             try:
-                trg.click()
-                time.sleep(0.2)
-                items = pager.find_elements(By.XPATH, "//li[normalize-space(.)='100']")
-                if not items:
-                    # เมนูอาจวางนอก pager (เป็น portal)
-                    items = pager._parent.find_elements(By.XPATH, "//li[normalize-space(.)='100']")
+                driver.execute_script("arguments[0].click();", trg)
+                time.sleep(0.3)
+                items = driver.find_elements(By.XPATH, options_xpath)
                 if items:
-                    items[0].click()
-                    print("[INFO] ตั้ง Rows/page = 100")
-                    time.sleep(0.5)
+                    driver.execute_script("arguments[0].click();", items[0])
+                    print("[INFO] ตั้ง Rows per page = 100")
+                    time.sleep(0.6)
                     return
             except Exception:
                 continue
     except Exception:
         pass
 
-def get_display_text(pager):
-    """ดึงข้อความ '1–100 of N' (หรือรูปแบบใกล้เคียง)"""
-    sels = [
-        ".MuiTablePagination-displayedRows",
-        "*[class*='MuiTablePagination-displayedRows']",
-        "//p[contains(.,' of ')]",
-    ]
-    for sel in sels:
-        try:
-            if sel.startswith("//"):
-                els = pager._parent.find_elements(By.XPATH, sel)
-            else:
-                els = pager.find_elements(By.CSS_SELECTOR, sel)
-            for e in els:
-                t = e.text.strip()
-                if t:
-                    return t
-        except Exception:
-            continue
-    return ""
-
-def parse_total_from_display(txt):
-    """
-    พยายามดึงตัวเลขรวม N จากข้อความอย่าง '1–100 of 1234'
-    จะคืน (start, end, total) ถ้าจับได้, ไม่งั้นคืน (None, None, None)
-    """
-    if not txt:
-        return None, None, None
-    # แยกเลขทั้งหมด
-    nums = [int(x) for x in re.findall(r"\d+", txt)]
-    if len(nums) >= 3:
-        # เดาสามตัวแรกเป็น start, end, total
-        return nums[0], nums[1], nums[2]
-    if len(nums) == 1:
-        return None, None, nums[0]
-    return None, None, None
-
-def find_next_in_pager(pager):
-    """หา next ภายใน pager เท่านั้น (กันกดผิด component)"""
+def find_next_btn(driver):
     xps = [
-        ".//button[@aria-label='Next page' and not(@disabled)]",
-        ".//span[@title='Next Page']/button[not(@disabled)]",
-        ".//button[not(@disabled) and (contains(., 'Next') or contains(., 'ถัดไป'))]",
+        "//button[@aria-label='Next page' and not(@disabled)]",
+        "//span[@title='Next Page']/button[not(@disabled)]",
+        "//button[not(@disabled) and (contains(., 'ถัดไป') or contains(., 'Next'))]",
+        "//button[not(@disabled) and .//*[local-name()='svg' or local-name()='path']]",
     ]
     for xp in xps:
-        els = pager.find_elements(By.XPATH, xp)
+        els = driver.find_elements(By.XPATH, xp)
         for el in els:
-            if el.is_displayed() and el.is_enabled():
-                return el
+            try:
+                if el.is_enabled() and el.is_displayed():
+                    return el
+            except Exception:
+                continue
+    css = [
+        "button[aria-label='Next page']:not([disabled])",
+        "span[title='Next Page'] > button:not([disabled])",
+    ]
+    for sel in css:
+        els = driver.find_elements(By.CSS_SELECTOR, sel)
+        for el in els:
+            try:
+                if el.is_enabled() and el.is_displayed():
+                    return el
+            except Exception:
+                continue
     return None
 
-def first_row_signature(driver, locator, k=3):
-    """สร้างลายเซ็นหน้า (เอาแถวบนสุด k แถวรวมข้อความ) เพื่อเช็คว่าเปลี่ยนหน้าแล้วจริง"""
-    by, sel = locator
-    rows = driver.find_elements(by, sel)[:k]
-    parts = []
-    for r in rows:
-        cells = r.find_elements(By.CSS_SELECTOR, "td") or r.find_elements(By.CSS_SELECTOR, "[role='gridcell']")
-        parts.append("|".join([c.text.strip() for c in cells]))
-    return "§".join(parts)
-
-def extract_cells_from_row(r):
-    tds = r.find_elements(By.CSS_SELECTOR, "td")
+def extract_cells_from_row(row):
+    tds = row.find_elements(By.CSS_SELECTOR, "td")
     if not tds:
-        tds = r.find_elements(By.CSS_SELECTOR, "[role='gridcell']")
+        tds = row.find_elements(By.CSS_SELECTOR, "[role='gridcell']")
     return [c.text.strip() for c in tds if c.text is not None]
 
 def get_rows(driver, locator):
     by, sel = locator
+    rows_el = driver.find_elements(by, sel)
     rows = []
-    for r in driver.find_elements(by, sel):
+    for r in rows_el:
         cols = extract_cells_from_row(r)
         if cols:
             rows.append(cols)
     return rows
 
-# ---------- Clean & Save ----------
 def extract_thai(text):
     if pd.isna(text) or text is None:
         return ""
     m = re.search(r"[ก-๙].*", str(text))
     return m.group(0).strip() if m else str(text).strip()
+
+def scrape():
+    d = make_driver()
+    t0 = time.time()
+    try:
+        print(f"[INFO] เปิดหน้า: {URL}")
+        d.get(URL)
+
+        # รอจนมีเนื้อหาบางอย่างในหน้า
+        WebDriverWait(d, WAIT).until(EC.presence_of_element_located((By.XPATH, "//*")))
+        time.sleep(1.0)
+
+        locator = pick_richest_table_locator(d)
+        set_rows_per_page_100(d)
+
+        all_rows = []
+        curdate = datetime.today().strftime("%d/%m/%Y")
+        page = 1
+
+        while True:
+            time.sleep(1.0)
+            rows = get_rows(d, locator)
+            print(f"[INFO] Page {page}: พบ {len(rows)} แถว")
+            for r in rows:
+                # บังคับ 9 คอลัมน์
+                r = (r + [""] * 9)[:9]
+                r[-1] = curdate  # วันที่เก็บข้อมูล
+                all_rows.append(r)
+
+            nxt = find_next_btn(d)
+            if not nxt:
+                print("[INFO] ไม่มีปุ่มถัดไป -> จบ")
+                break
+            try:
+                d.execute_script("arguments[0].click();", nxt)
+                page += 1
+                WebDriverWait(d, 10).until(lambda x: len(get_rows(x, locator)) > 0)
+            except Exception as e:
+                print(f"[WARN] กดถัดไปไม่สำเร็จ: {e} -> จบ")
+                break
+
+        return all_rows, t0
+    finally:
+        d.quit()
 
 def save_csv(rows):
     if not rows:
@@ -194,108 +189,21 @@ def save_csv(rows):
         fixed.append(r)
     df = pd.DataFrame(fixed, columns=headers)
     df["ชื่อสถานี"] = df["ชื่อสถานี"].apply(extract_thai)
+
+    # กันเครื่องหมาย – หรือ '-' ให้เป็นค่าว่าง
     df = df.replace({"-": "", "–": ""})
 
     file_exists = os.path.exists(CSV_OUT)
     df.to_csv(CSV_OUT, mode="a", index=False, encoding="utf-8-sig", header=not file_exists)
     print(f"💾 บันทึก {len(df)} แถว -> {CSV_OUT}")
 
-# ---------- Main scrape ----------
-def scrape_all():
-    d = make_driver()
-    t0 = time.time()
-    try:
-        print(f"[INFO] เปิดหน้า: {URL}")
-        d.get(URL)
-        WebDriverWait(d, 30).until(EC.presence_of_element_located((By.XPATH, "//*")))
-        time.sleep(1.0)
-
-        locator = find_rich_table_locator(d)
-        pager = find_paginator_root(d)
-        if pager:
-            set_rows_per_page_100(pager)
-            time.sleep(0.5)
-
-        # อ่าน total ถ้าอ่านได้จะคำนวณจำนวนหน้าเลย
-        total_start, total_end, total_n = (None, None, None)
-        page_size = 100
-        pages_plan = None
-        if pager:
-            txt = get_display_text(pager)
-            total_start, total_end, total_n = parse_total_from_display(txt)
-            if total_n:
-                if total_start and total_end:
-                    page_size = max(1, total_end - total_start + 1)
-                pages_plan = max(1, math.ceil(total_n / page_size))
-                print(f"[INFO] paginator: {txt} -> total={total_n}, page_size={page_size}, pages={pages_plan}")
-
-        all_rows = []
-        curdate = datetime.today().strftime("%d/%m/%Y")
-        page = 1
-        # ใช้ signature เพื่อตรวจว่ามีการเปลี่ยนหน้าแล้วจริง
-        sig = first_row_signature(d, locator)
-
-        while True:
-            # งบเวลา
-            if time.time() - t0 > SCRAPE_BUDGET_SEC:
-                print(f"[WARN] หมดงบเวลา {SCRAPE_BUDGET_SEC}s -> หยุดเก็บต่อ")
-                break
-
-            time.sleep(0.4)
-            rows = get_rows(d, locator)
-            # บังคับ 9 คอลัมน์ + ใส่วันที่
-            for r in rows:
-                r = (r + [""] * 9)[:9]
-                r[-1] = curdate
-                all_rows.append(r)
-
-            # วางแผนหน้าต่อไป
-            if pager:
-                # ถ้ารู้จำนวนหน้าแล้ว และเก็บครบแล้ว -> จบ
-                if pages_plan and page >= pages_plan:
-                    print(f"[INFO] ครบ {page}/{pages_plan} หน้า -> จบ")
-                    break
-                nxt = find_next_in_pager(pager)
-            else:
-                nxt = None
-
-            if not nxt:
-                print("[INFO] ไม่พบปุ่มถัดไปใน paginator -> จบ")
-                break
-
-            # คลิก next และรอจน signature เปลี่ยน
-            old_sig = sig
-            try:
-                d.execute_script("arguments[0].click();", nxt)
-                # รอเปลี่ยนหน้า (signature เปลี่ยน / displayedRows เปลี่ยน)
-                changed = False
-                for _ in range(30):  # ~3s
-                    time.sleep(0.1)
-                    sig = first_row_signature(d, locator)
-                    if sig and sig != old_sig:
-                        changed = True
-                        break
-                if not changed:
-                    print("[WARN] คลิกถัดไปแล้วแต่หน้าไม่เปลี่ยน -> จบ")
-                    break
-                page += 1
-                if pager:
-                    print(f"[INFO] ไปหน้า {page} / {pages_plan or '?'}")
-            except Exception as e:
-                print(f"[WARN] ไปหน้าถัดไปไม่สำเร็จ: {e} -> จบ")
-                break
-
-        # คัดแถวที่มีอักษรไทยในคอลัมน์ชื่อสถานี (กัน header แฝง)
-        cleaned = [r for r in all_rows if re.search(r"[ก-๙]", r[0] if r else "")]
-        return cleaned, t0
-    finally:
-        d.quit()
-
 def main():
     try:
-        rows, t0 = scrape_all()
+        rows, t0 = scrape()
+        # เลือก keep เฉพาะแถวที่มีอักษรไทยในชื่อสถานี (กัน header แฝง)
+        rows = [r for r in rows if re.search(r"[ก-๙]", r[0] if r else "")]
         save_csv(rows)
-        print(f"⏱ ใช้เวลา: {time.time() - t0:.2f}s, รวม {len(rows)} แถว")
+        print(f"⏱ ใช้เวลา: {time.time()-t0:.2f}s")
     except Exception as e:
         print(f"❌ Error: {e}")
         sys.exit(1)
