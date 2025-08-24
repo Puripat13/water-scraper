@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, time, re, sys, math
+import os, time, re, sys
 from datetime import datetime
 import pandas as pd
 
@@ -13,13 +13,14 @@ from selenium.common.exceptions import TimeoutException
 URL = "https://nationalthaiwater.onwr.go.th/waterlevel"
 CSV_OUT = "waterlevel_report.csv"
 
-# >>> คอลัมน์ "อังกฤษ 9 ช่อง" ตามต้องการ <<<
+# ---- สคีมาคงที่ (อังกฤษ 9 คอลัมน์) ----
 HEADERS = [
     "Station", "Location", "Time", "Water_Level",
     "Bank_Level", "Gauge_Zero", "Capacity_Percent",
     "Status", "Data_Time"
 ]
 
+# ================= Driver =================
 def make_driver():
     opt = Options()
     opt.page_load_strategy = "eager"
@@ -38,6 +39,7 @@ def make_driver():
     drv.set_page_load_timeout(60)
     return drv
 
+# ================= Helpers =================
 def find_table_locator(driver):
     cands = [
         (By.CSS_SELECTOR, "div.MuiDataGrid-virtualScrollerRenderZone .MuiDataGrid-row"),
@@ -109,13 +111,16 @@ def get_rows(driver, locator):
             rows.append(cols)
     return rows
 
-def clean_station(text):
-    # เก็บเฉพาะชื่อไทย/ตัวหนังสือ (ตัดเลข/โค้ดนำหน้า ถ้ามี)
+# ---- ตัดรหัส/ตัวเลข/ตัวอังกฤษหน้าชื่อสถานี ----
+def clean_station(text: str) -> str:
+    """เก็บเฉพาะตั้งแต่ 'อักษรไทยตัวแรก' ของชื่อสถานี"""
     if pd.isna(text) or text is None:
         return ""
-    m = re.search(r"[ก-๙A-Za-z].*", str(text))
-    return m.group(0).strip() if m else str(text).strip()
+    s = str(text).strip()
+    m = re.search(r"[ก-๙].*", s)  # หาอักษรไทยตัวแรก
+    return m.group(0).strip() if m else s  # ถ้าไม่เจอไทย ให้คืนค่าเดิม
 
+# ================= Scrape =================
 def scrape_all():
     d = make_driver()
     t0 = time.time()
@@ -141,9 +146,8 @@ def scrape_all():
 
             rows = get_rows(d, locator)
             for r in rows:
-                # บังคับจำนวน 9 ช่อง + เติม Data_Time
-                r = (r + [""] * 9)[:9]
-                r[-1] = curdate
+                r = (r + [""] * 9)[:9]  # บังคับ 9 ช่อง
+                r[-1] = curdate        # ใส่ Data_Time
                 all_rows.append(r)
 
             if not pager:
@@ -157,7 +161,6 @@ def scrape_all():
 
             try:
                 d.execute_script("arguments[0].click();", nxt)
-                # รอจน row เดิมหาย -> หน้าใหม่
                 if first_old:
                     WebDriverWait(d, 10).until(EC.staleness_of(first_old))
                 WebDriverWait(d, 10).until(lambda x: len(get_rows(x, locator)) > 0)
@@ -172,19 +175,19 @@ def scrape_all():
     finally:
         d.quit()
 
+# ================= Save =================
 def save_csv(rows):
     if not rows:
         print("⚠️ ไม่พบข้อมูล")
         return
 
-    # สร้าง DataFrame ด้วยคอลัมน์อังกฤษ 9 ช่องเท่านั้น
     fixed = []
     for r in rows:
         r = (list(r) + [""] * 9)[:9]
         fixed.append(r)
     df = pd.DataFrame(fixed, columns=HEADERS)
 
-    # ทำความสะอาดค่าบางอย่าง
+    # ตัดรหัสหน้า 'Station' และทำความสะอาดค่าเล็กน้อย
     df["Station"] = df["Station"].apply(clean_station)
     df = df.replace({"-": "", "–": ""})
 
@@ -192,10 +195,11 @@ def save_csv(rows):
     df.to_csv(CSV_OUT, mode="a", index=False, encoding="utf-8-sig", header=not file_exists)
     print(f"💾 บันทึก {len(df)} แถว -> {CSV_OUT}")
 
+# ================= Main =================
 def main():
     try:
         rows, t0 = scrape_all()
-        # เก็บเฉพาะแถวที่มีตัวอักษรใน Station
+        # เก็บเฉพาะแถวที่มีอักษรจริงใน Station
         rows = [r for r in rows if re.search(r"[ก-๙A-Za-z]", r[0] if r else "")]
         save_csv(rows)
         print(f"⏱ ใช้เวลา: {time.time() - t0:.2f}s")
