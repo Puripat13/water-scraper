@@ -2,7 +2,8 @@ name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 20:00 ไทย
+    # รันทุกวันเวลา 20:00 ไทย (UTC+7) = 13:00 UTC
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
@@ -11,7 +12,7 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONUNBUFFERED: "1"
-      SCRAPE_BUDGET_SEC: "600"
+      CSV_OUT: waterlevel_report.csv
 
     steps:
       - name: Checkout
@@ -22,135 +23,87 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chrome & Chromedriver
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y wget unzip curl jq ca-certificates
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
-          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
-          wget -qO chromedriver.zip "$DRIVER_URL"
-          unzip -q chromedriver.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
-          sudo chmod +x /usr/bin/chromedriver
-          rm -rf chromedriver.zip chromedriver-linux64
-          google-chrome --version
-          chromedriver --version
+      # ใช้ Chrome แบบพร้อม Selenium Manager (ไม่ต้องลง chromedriver แยก)
+      - name: Setup Google Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Show Chrome version
+        run: google-chrome --version || true
 
       - name: Install Python packages
         run: |
-          set -eux
           python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
+      # scrap2.py ของคุณต้องบันทึก CSV ด้วย 9 คอลัมน์อังกฤษ:
+      # Station,Location,Time,Water_Level,Bank_Level,Gauge_Zero,Capacity_Percent,Status,Data_Time
       - name: Run scraper
         run: |
           set -eux
           python scrap2.py
-          test -f waterlevel_report.csv
+          test -f "${CSV_OUT}"
 
       - name: Upload artifact (CSV)
-        if: always() && hashFiles('waterlevel_report.csv') != ''
+        if: always() && hashFiles(env.CSV_OUT) != ''
         uses: actions/upload-artifact@v4
         with:
           name: waterlevel_report
-          path: waterlevel_report.csv
+          path: ${{ env.CSV_OUT }}
           if-no-files-found: ignore
           retention-days: 7
 
-      # Robust uploader: ใช้ DRIVE_FILE_ID ถ้ามี, ถ้า 404/ไม่เจอ -> หาในโฟลเดอร์ PURIPAT_ID, ไม่มีก็สร้างใหม่
-      - name: Upload to Google Drive (update-or-create, supports Shared Drive)
-        if: success() && hashFiles('waterlevel_report.csv') != ''
+      # อัปโหลดขึ้น Google Drive:
+      # - ถ้ามี DRIVE_FILE_ID -> "เขียนทับทั้งไฟล์" (เหมาะกับ My Drive)
+      # - ถ้าไม่มีแต่มี PURIPAT_ID (โฟลเดอร์ Shared Drive) -> "สร้างใหม่"
+      - name: Upload to Google Drive (overwrite by ID or create in folder)
+        if: success() && hashFiles(env.CSV_OUT) != ''
         env:
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # เนื้อหา JSON ของ SA (ทั้งก้อน)
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}             # โฟลเดอร์ใน Shared Drive (ต้องเพิ่ม SA เข้าเป็น Content manager+)
-          DRIVE_FILE_ID: ${{ secrets.DRIVE_FILE_ID }}            # (ไม่บังคับ) fileId เดิม ถ้ามี
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อหา JSON ของ Service Account (ทั้งก้อน)
+          DRIVE_FILE_ID: ${{ secrets.DRIVE_FILE_ID }}           # (แนะนำเมื่อใช้ My Drive) fileId ของ waterlevel_report.csv
+          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # (ทางเลือก) โฟลเดอร์ปลายทางใน Shared Drive
+          CSV_OUT: ${{ env.CSV_OUT }}
         run: |
-          set -eux
           python - <<'PY'
-          import os, io, json, sys
-          import pandas as pd
+          import os, json
           from google.oauth2.service_account import Credentials
           from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+          from googleapiclient.http import MediaFileUpload
           from googleapiclient.errors import HttpError
 
-          CSV = "waterlevel_report.csv"
           SA = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-          FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "").strip() or None
-          FILE_ID = os.environ.get("DRIVE_FILE_ID", "").strip() or None
+          FILE_ID = (os.environ.get("DRIVE_FILE_ID") or "").strip() or None
+          FOLDER_ID = (os.environ.get("DRIVE_FOLDER_ID") or "").strip() or None
+          CSV = os.environ["CSV_OUT"]
 
           creds = Credentials.from_service_account_info(SA, scopes=["https://www.googleapis.com/auth/drive"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-          def download_csv(file_id):
-              req = drive.files().get_media(fileId=file_id)
-              buf = io.BytesIO()
-              down = MediaIoBaseDownload(buf, req)
-              done = False
-              while not done:
-                  _, done = down.next_chunk()
-              buf.seek(0)
-              try:
-                  return pd.read_csv(buf)
-              except Exception:
-                  buf.seek(0)
-                  return pd.read_csv(buf, encoding="utf-8-sig")
-
-          new_df = pd.read_csv(CSV)
-
-          def update_file(fid, df):
-              tmp = "__merged.csv"
-              df.to_csv(tmp, index=False, encoding="utf-8-sig")
-              media = MediaFileUpload(tmp, mimetype="text/csv", resumable=True)
+          def overwrite(fid, path):
+              media = MediaFileUpload(path, mimetype="text/csv", resumable=True)
               drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Updated fileId={fid}")
+              print(f"✅ Overwritten Drive fileId={fid}")
 
-          def create_file(folder_id, path):
+          def create(folder_id, path):
               meta = {"name": os.path.basename(path)}
-              if folder_id:
-                  meta["parents"] = [folder_id]
+              if folder_id: meta["parents"] = [folder_id]
               media = MediaFileUpload(path, mimetype="text/csv", resumable=True)
               created = drive.files().create(body=meta, media_body=media, fields="id", supportsAllDrives=True).execute()
               print(f"✅ Created new fileId={created['id']}")
               return created["id"]
 
-          # 1) ถ้ามี FILE_ID: พยายามอัปเดตทับ
-          if FILE_ID:
-              try:
-                  drive.files().get(fileId=FILE_ID, fields="id,name,mimeType", supportsAllDrives=True).execute()
-                  old = download_csv(FILE_ID)
-                  all_df = pd.concat([old, new_df], ignore_index=True)
-                  if set(["ชื่อสถานี","วันที่เก็บข้อมูล"]).issubset(all_df.columns):
-                      all_df.drop_duplicates(subset=["ชื่อสถานี","วันที่เก็บข้อมูล"], keep="last", inplace=True)
-                  else:
-                      all_df.drop_duplicates(keep="last", inplace=True)
-                  update_file(FILE_ID, all_df)
-                  sys.exit(0)
-              except HttpError as e:
-                  print(f"[WARN] update by fileId failed: {e}")
-
-          # 2) ถ้าไม่สำเร็จ/ไม่มี FILE_ID: หาไฟล์ตามชื่อใน FOLDER_ID
-          if FOLDER_ID:
-              fname = os.path.basename(CSV).replace("'", "\\'")
-              q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
-              res = drive.files().list(q=q, fields="files(id,name,mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-              files = res.get("files", [])
-              if files:
-                  fid = files[0]["id"]
-                  old = download_csv(fid)
-                  all_df = pd.concat([old, new_df], ignore_index=True)
-                  if set(["ชื่อสถานี","วันที่เก็บข้อมูล"]).issubset(all_df.columns):
-                      all_df.drop_duplicates(subset=["ชื่อสถานี","วันที่เก็บข้อมูล"], keep="last", inplace=True)
-                  else:
-                      all_df.drop_duplicates(keep="last", inplace=True)
-                  update_file(fid, all_df)
-                  sys.exit(0)
+          try:
+              if FILE_ID:
+                  # เขียนทับไฟล์เดิม (เหมาะกับ My Drive—ให้เจ้าของไฟล์เป็นคุณ)
+                  drive.files().get(fileId=FILE_ID, fields="id", supportsAllDrives=True).execute()
+                  overwrite(FILE_ID, CSV)
+              elif FOLDER_ID:
+                  # สร้างใหม่ใน Shared Drive
+                  create(FOLDER_ID, CSV)
               else:
-                  create_file(FOLDER_ID, CSV)
-                  sys.exit(0)
-
-          # 3) ฟอลแบ็ก: ไม่มี FOLDER_ID -> สร้างที่ root ของ SA/ไดรฟ์ที่เข้าถึงได้
-          create_file(None, CSV)
+                  raise SystemExit("❌ ต้องใส่อย่างน้อย DRIVE_FILE_ID (My Drive) หรือ DRIVE_FOLDER_ID (Shared Drive)")
+          except HttpError as e:
+              # เคสสร้างใน My Drive ด้วย SA จะเจอ 403 quota — แจ้งชัดเจน
+              if e.resp.status == 403:
+                  print("❌ 403: Service Account ไม่มีโควตาใน My Drive — ให้ใช้ DRIVE_FILE_ID (อัปเดตทับไฟล์ที่คุณสร้างไว้) หรืออัปโหลดไป Shared Drive ผ่าน DRIVE_FOLDER_ID")
+                  raise
+              raise
           PY
