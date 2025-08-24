@@ -2,7 +2,7 @@ name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    # รันทุกวันเวลา 20:00 ไทย (UTC+7) = 13:00 UTC
+    # รันทุกวัน 20:00 น.เวลาไทย (UTC+7) = 13:00 UTC
     - cron: '0 13 * * *'
   workflow_dispatch:
 
@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ใช้ Chrome แบบพร้อม Selenium Manager (ไม่ต้องลง chromedriver แยก)
+      # ใช้ Chrome พร้อม Selenium Manager (ไม่ต้องลง chromedriver เอง)
       - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
       - name: Show Chrome version
@@ -34,8 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      # scrap2.py ของคุณต้องบันทึก CSV ด้วย 9 คอลัมน์อังกฤษ:
-      # Station,Location,Time,Water_Level,Bank_Level,Gauge_Zero,Capacity_Percent,Status,Data_Time
+      # scrap2.py ต้องสร้างไฟล์ CSV_OUT (เช่น waterlevel_report.csv)
       - name: Run scraper
         run: |
           set -eux
@@ -51,22 +50,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # อัปโหลดขึ้น Google Drive:
-      # - ถ้ามี DRIVE_FILE_ID -> "เขียนทับทั้งไฟล์" (เหมาะกับ My Drive)
-      # - ถ้าไม่มีแต่มี PURIPAT_ID (โฟลเดอร์ Shared Drive) -> "สร้างใหม่"
-      - name: Upload to Google Drive (overwrite by ID or create in folder)
+      # อัปโหลดแบบปลอดภัย:
+      # - ถ้ามี DRIVE_FILE_ID  -> เขียนทับไฟล์เดิม (เหมาะกับ My Drive)
+      # - ถ้าไม่มี แต่มี PURIPAT_ID ที่เป็นโฟลเดอร์ใน Shared Drive -> สร้างไฟล์ใหม่ในโฟลเดอร์นั้น
+      - name: Upload to Google Drive (update-or-create; My Drive or Shared Drive)
         if: success() && hashFiles(env.CSV_OUT) != ''
         env:
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อหา JSON ของ Service Account (ทั้งก้อน)
-          DRIVE_FILE_ID: ${{ secrets.DRIVE_FILE_ID }}           # (แนะนำเมื่อใช้ My Drive) fileId ของ waterlevel_report.csv
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # (ทางเลือก) โฟลเดอร์ปลายทางใน Shared Drive
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # JSON ของ Service Account (ทั้งก้อน)
+          DRIVE_FILE_ID: ${{ secrets.DRIVE_FILE_ID }}            # (ตัวเลือกที่ 1) fileId ของไฟล์เดิมใน My Drive
+          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}             # (ตัวเลือกที่ 2) โฟลเดอร์ใน Shared Drive
           CSV_OUT: ${{ env.CSV_OUT }}
         run: |
           python - <<'PY'
-          import os, json
+          import os, json, io, sys
           from google.oauth2.service_account import Credentials
           from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
+          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
           from googleapiclient.errors import HttpError
 
           SA = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
@@ -77,33 +76,42 @@ jobs:
           creds = Credentials.from_service_account_info(SA, scopes=["https://www.googleapis.com/auth/drive"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
+          def get_meta(fid):
+              return drive.files().get(fileId=fid, fields="id,name,size,mimeType,driveId,parents", supportsAllDrives=True).execute()
+
           def overwrite(fid, path):
               media = MediaFileUpload(path, mimetype="text/csv", resumable=True)
               drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Overwritten Drive fileId={fid}")
+              m = get_meta(fid)
+              print(f"✅ Overwritten: id={m['id']} name={m['name']} size={m.get('size','?')} bytes")
 
-          def create(folder_id, path):
-              meta = {"name": os.path.basename(path)}
-              if folder_id: meta["parents"] = [folder_id]
+          def create_in_folder(folder_id, path):
+              meta = {"name": os.path.basename(path), "parents": [folder_id]}
               media = MediaFileUpload(path, mimetype="text/csv", resumable=True)
-              created = drive.files().create(body=meta, media_body=media, fields="id", supportsAllDrives=True).execute()
-              print(f"✅ Created new fileId={created['id']}")
-              return created["id"]
+              newf = drive.files().create(body=meta, media_body=media, fields="id", supportsAllDrives=True).execute()
+              m = get_meta(newf["id"])
+              print(f"✅ Created: id={m['id']} name={m['name']} size={m.get('size','?')} bytes")
+
+          # ทางเลือก 1: มีไฟล์เดิมใน My Drive -> อัปเดตทับ (ต้องแชร์ไฟล์ให้ SA เป็น Editor)
+          if FILE_ID:
+              overwrite(FILE_ID, CSV)
+              sys.exit(0)
+
+          # ทางเลือก 2: ไม่มี FILE_ID -> ต้องอัปโหลดเข้า Shared Drive เท่านั้น
+          if not FOLDER_ID:
+              print("❌ ต้องใส่ DRIVE_FILE_ID (My Drive) หรือ PURIPAT_ID (Shared Drive) อย่างน้อยหนึ่งค่า", file=sys.stderr)
+              sys.exit(1)
 
           try:
-              if FILE_ID:
-                  # เขียนทับไฟล์เดิม (เหมาะกับ My Drive—ให้เจ้าของไฟล์เป็นคุณ)
-                  drive.files().get(fileId=FILE_ID, fields="id", supportsAllDrives=True).execute()
-                  overwrite(FILE_ID, CSV)
-              elif FOLDER_ID:
-                  # สร้างใหม่ใน Shared Drive
-                  create(FOLDER_ID, CSV)
-              else:
-                  raise SystemExit("❌ ต้องใส่อย่างน้อย DRIVE_FILE_ID (My Drive) หรือ DRIVE_FOLDER_ID (Shared Drive)")
+              fmeta = get_meta(FOLDER_ID)
           except HttpError as e:
-              # เคสสร้างใน My Drive ด้วย SA จะเจอ 403 quota — แจ้งชัดเจน
-              if e.resp.status == 403:
-                  print("❌ 403: Service Account ไม่มีโควตาใน My Drive — ให้ใช้ DRIVE_FILE_ID (อัปเดตทับไฟล์ที่คุณสร้างไว้) หรืออัปโหลดไป Shared Drive ผ่าน DRIVE_FOLDER_ID")
-                  raise
-              raise
+              print(f"❌ อ่านโฟลเดอร์ไม่สำเร็จ: {e}", file=sys.stderr); sys.exit(1)
+
+          if not fmeta.get("driveId"):
+              print("❌ PURIPAT_ID ชี้ไปที่โฟลเดอร์ใน My Drive ซึ่ง SA ไม่มีโควตาสร้างไฟล์ใหม่", file=sys.stderr)
+              print("👉 ใช้ DRIVE_FILE_ID เพื่ออัปเดตทับไฟล์เดิม หรือย้ายไป Shared Drive แล้วใช้ PURIPAT_ID ของ Shared Drive", file=sys.stderr)
+              sys.exit(1)
+
+          # เป็น Shared Drive -> สร้างไฟล์ใหม่ได้
+          create_in_folder(FOLDER_ID, CSV)
           PY
