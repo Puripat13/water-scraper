@@ -1,18 +1,15 @@
-name: Auto Scrape Waterlevel
+name: Auto Scrape WaterLevel
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 20:00 น. เวลาไทย (UTC+7)
+    # รันทุกวันเวลา 20:00 ประเทศไทย (UTC+7) => 13:00 UTC
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      TZ: Asia/Bangkok
-      CSV_OUT: waterlevel_report.csv
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "false"   # กันซ้ำจากในสคริปต์
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -23,119 +20,37 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Setup Google Chrome
-        uses: browser-actions/setup-chrome@v1
+      - name: Install Chrome & Chromedriver
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y wget unzip curl jq ca-certificates
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
+          wget -qO chromedriver.zip "$DRIVER_URL"
+          unzip -q chromedriver.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
+          rm -rf chromedriver.zip chromedriver-linux64
+          google-chrome --version
+          chromedriver --version
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
+          pip install selenium pandas gdown google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
-      # รันสคริปต์ด้วย retry 3 ครั้ง กันกรณีโหลดหน้าเว็บช้าใน CI
-      - name: Run scraper (waterlevel) with retry
+      - name: Run scraper
         run: |
-          for i in 1 2 3; do
-            echo "Attempt #$i"
-            if python scrap2.py; then
-              exit 0
-            fi
-            echo "Sleep before retry..."
-            sleep 10
-          done
-          echo "All attempts failed."
-          exit 1
+          set -eux
+          python scrap2.py
 
-      - name: Append & Upload CSV to Google Drive (Shared/My Drive)
-        env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}        # ใส่ Folder ID
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อหา JSON ทั้งก้อน
-          CSV_OUT: ${{ env.CSV_OUT }}
-        run: |
-          python - <<'PY'
-          import os, io, json, sys
-          import pandas as pd
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-
-          CSV_OUT = os.getenv("CSV_OUT", "waterlevel_report.csv")
-          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
-          SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
-
-          if not os.path.exists(CSV_OUT):
-              print(f"❌ Not found local CSV: {CSV_OUT}", file=sys.stderr); sys.exit(1)
-
-          info = json.loads(SA_JSON)
-          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # ตรวจสอบโฟลเดอร์ (รองรับ Shared Drive)
-          drive.files().get(fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True).execute()
-
-          # หาไฟล์เดิม
-          fname = os.path.basename(CSV_OUT).replace("'", "\\'")
-          q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
-          res = drive.files().list(
-              q=q, fields="files(id,name,mimeType)",
-              supportsAllDrives=True, includeItemsFromAllDrives=True
-          ).execute()
-          files = res.get("files", [])
-
-          # โหลดผลใหม่จากรอบนี้
-          new_df = pd.read_csv(CSV_OUT)
-
-          if files:
-              fid = files[0]["id"]
-              mime = files[0]["mimeType"]
-              if mime.startswith("application/vnd.google-apps"):
-                  print("❌ เจอไฟล์เป็น Google Sheets; ต้องใช้ Sheets API เพื่อ append", file=sys.stderr)
-                  sys.exit(2)
-
-              # ดาวน์โหลดไฟล์เดิม
-              request = drive.files().get_media(fileId=fid)
-              fh = io.BytesIO()
-              downloader = MediaIoBaseDownload(fh, request)
-              done = False
-              while not done:
-                  status, done = downloader.next_chunk()
-              fh.seek(0)
-              try:
-                  old_df = pd.read_csv(fh)
-              except Exception:
-                  fh.seek(0)
-                  old_df = pd.read_csv(fh, encoding="utf-8-sig")
-
-              # รวม + ลบซ้ำตามคีย์ที่มี (ไทย)
-              all_df = pd.concat([old_df, new_df], ignore_index=True)
-              keys = [c for c in ["ชื่อสถานี","เวลา","วันที่เก็บข้อมูล"] if c in all_df.columns]
-              if keys:
-                  all_df.drop_duplicates(subset=keys, keep="last", inplace=True)
-              else:
-                  all_df.drop_duplicates(keep="last", inplace=True)
-
-              # พยายามจัดเรียงตามเวลา หากแปลงได้
-              for col in ["วันที่เก็บข้อมูล","เวลา","DateTime","วันที่เวลา"]:
-                  if col in all_df.columns:
-                      try:
-                          all_df[col] = pd.to_datetime(all_df[col], errors="coerce")
-                      except Exception:
-                          pass
-              sort_cols = [c for c in ["วันที่เก็บข้อมูล","เวลา","DateTime"] if c in all_df.columns]
-              if sort_cols:
-                  all_df.sort_values(sort_cols, inplace=True)
-
-              tmp_path = "__merged_out.csv"
-              all_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
-
-              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
-              drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Appended & updated: {fname} (fileId={fid})")
-
-          else:
-              meta = {"name": os.path.basename(CSV_OUT), "parents": [FOLDER_ID]}
-              media = MediaFileUpload(CSV_OUT, mimetype="text/csv", resumable=True)
-              created = drive.files().create(
-                  body=meta, media_body=media, fields="id", supportsAllDrives=True
-              ).execute()
-              print(f"✅ Created new: {CSV_OUT} (fileId={created['id']})")
-          PY
+      - name: Upload to Google Drive
+        uses: mathisve/gdrive-upload-action@main
+        with:
+          filename: ./waterlevel_report.csv
+          name: waterlevel_report.csv
+          folderId: ${{ secrets.PURIPAT_ID }}
+          credentials: ${{ secrets.SERVICE_ACCOUNT }}
+          encoded: 'false'
