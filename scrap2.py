@@ -1,212 +1,125 @@
-# -*- coding: utf-8 -*-
-import os, time, re, sys
-from datetime import datetime
+import os
+import re
+import time
 import pandas as pd
-
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
 
+# ---------------- CONFIG ----------------
 URL = "https://nationalthaiwater.onwr.go.th/waterlevel"
 CSV_OUT = "waterlevel_report.csv"
-WAIT = 30
+DRIVE_FOLDER_ID = "your_drive_folder_id_here"   # <<== ใส่ folder id ของ Google Drive
+ENABLE_GOOGLE_DRIVE_UPLOAD = True
+# -----------------------------------------
 
-def make_driver():
-    opt = Options()
-    opt.page_load_strategy = "eager"
-    opt.add_argument("--headless=new")
-    opt.add_argument("--no-sandbox")
-    opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--disable-gpu")
-    opt.add_argument("--window-size=1366,800")
-    opt.add_argument("--disable-blink-features=AutomationControlled")
-    opt.add_argument("--lang=th-TH,th")
-    opt.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    )
-    drv = webdriver.Chrome(options=opt)
-    drv.set_page_load_timeout(60)
-    return drv
-
-def pick_richest_table_locator(driver):
-    """ลองทุก selector ที่เจอตาราง แล้วเลือกตัวที่จำนวนแถว 'มากที่สุด'"""
-    candidates = [
-        (By.CSS_SELECTOR, "div.MuiDataGrid-virtualScrollerRenderZone .MuiDataGrid-row"),
-        (By.CSS_SELECTOR, "div[role='rowgroup'] [role='row']"),
-        (By.CSS_SELECTOR, ".MuiTable-root tbody tr"),
-        (By.CSS_SELECTOR, "table tbody tr"),
-    ]
-    best = None
-    best_n = -1
-    for by, sel in candidates:
-        try:
-            WebDriverWait(driver, 8).until(EC.presence_of_element_located((by, sel)))
-        except TimeoutException:
-            continue
-        rows = driver.find_elements(by, sel)
-        n = len(rows)
-        if n > best_n:
-            best_n = n
-            best = (by, sel)
-    if not best:
-        raise TimeoutException("ไม่พบตารางข้อมูลบนหน้า")
-    print(f"[INFO] ใช้ locator: {best} (แถวเริ่มต้น {best_n})")
-    return best
-
-def set_rows_per_page_100(driver):
-    """พยายามตั้ง Rows per page = 100 (ถ้ามี)"""
-    try:
-        # MUI pagination select
-        # หา select ที่มีค่า 10/25/50/100
-        options_xpath = "//ul//li[normalize-space(.)='100']"
-        # เปิดเมนู page size
-        triggers = driver.find_elements(By.XPATH, "//div[contains(@class,'MuiTablePagination') or contains(@class,'MuiDataGrid')]//div[contains(@class,'MuiSelect-select') or @role='button']")
-        for trg in triggers:
-            try:
-                driver.execute_script("arguments[0].click();", trg)
-                time.sleep(0.3)
-                items = driver.find_elements(By.XPATH, options_xpath)
-                if items:
-                    driver.execute_script("arguments[0].click();", items[0])
-                    print("[INFO] ตั้ง Rows per page = 100")
-                    time.sleep(0.6)
-                    return
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-def find_next_btn(driver):
-    xps = [
-        "//button[@aria-label='Next page' and not(@disabled)]",
-        "//span[@title='Next Page']/button[not(@disabled)]",
-        "//button[not(@disabled) and (contains(., 'ถัดไป') or contains(., 'Next'))]",
-        "//button[not(@disabled) and .//*[local-name()='svg' or local-name()='path']]",
-    ]
-    for xp in xps:
-        els = driver.find_elements(By.XPATH, xp)
-        for el in els:
-            try:
-                if el.is_enabled() and el.is_displayed():
-                    return el
-            except Exception:
-                continue
-    css = [
-        "button[aria-label='Next page']:not([disabled])",
-        "span[title='Next Page'] > button:not([disabled])",
-    ]
-    for sel in css:
-        els = driver.find_elements(By.CSS_SELECTOR, sel)
-        for el in els:
-            try:
-                if el.is_enabled() and el.is_displayed():
-                    return el
-            except Exception:
-                continue
-    return None
-
-def extract_cells_from_row(row):
-    tds = row.find_elements(By.CSS_SELECTOR, "td")
-    if not tds:
-        tds = row.find_elements(By.CSS_SELECTOR, "[role='gridcell']")
-    return [c.text.strip() for c in tds if c.text is not None]
-
-def get_rows(driver, locator):
-    by, sel = locator
-    rows_el = driver.find_elements(by, sel)
-    rows = []
-    for r in rows_el:
-        cols = extract_cells_from_row(r)
-        if cols:
-            rows.append(cols)
-    return rows
-
-def extract_thai(text):
-    if pd.isna(text) or text is None:
+def extract_thai(text: str) -> str:
+    """ดึงเฉพาะตัวอักษรภาษาไทยจาก string"""
+    if not isinstance(text, str):
         return ""
-    m = re.search(r"[ก-๙].*", str(text))
-    return m.group(0).strip() if m else str(text).strip()
+    match = re.findall(r"[ก-๙\s]+", text)
+    return "".join(match).strip() if match else text
+
+def init_drive():
+    gauth = GoogleAuth()
+    gauth.LocalWebserverAuth()  # เปิด browser ให้ login
+    return GoogleDrive(gauth)
+
+def drive_upload_or_update_csv(local_path, drive_folder_id, target_name):
+    drive = init_drive()
+    file_list = drive.ListFile({
+        "q": f"'{drive_folder_id}' in parents and trashed=false"
+    }).GetList()
+
+    # หาไฟล์เก่าที่ชื่อเหมือนกัน
+    file_id = None
+    for f in file_list:
+        if f["title"] == target_name:
+            file_id = f["id"]
+            break
+
+    if file_id:
+        file = drive.CreateFile({"id": file_id})
+        file.SetContentFile(local_path)
+        file.Upload()
+        return "update", file_id
+    else:
+        file = drive.CreateFile({
+            "title": target_name,
+            "parents": [{"id": drive_folder_id}]
+        })
+        file.SetContentFile(local_path)
+        file.Upload()
+        return "upload", file["id"]
 
 def scrape():
-    d = make_driver()
-    t0 = time.time()
-    try:
-        print(f"[INFO] เปิดหน้า: {URL}")
-        d.get(URL)
+    print("[INFO] เปิดหน้า:", URL)
+    driver = webdriver.Chrome()
+    driver.get(URL)
 
-        # รอจนมีเนื้อหาบางอย่างในหน้า
-        WebDriverWait(d, WAIT).until(EC.presence_of_element_located((By.XPATH, "//*")))
-        time.sleep(1.0)
+    # รอ table โหลด
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table tbody tr"))
+    )
 
-        locator = pick_richest_table_locator(d)
-        set_rows_per_page_100(d)
+    rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+    print(f"[INFO] พบ {len(rows)} แถว")
 
-        all_rows = []
-        curdate = datetime.today().strftime("%d/%m/%Y")
-        page = 1
+    all_data = []
+    for row in rows:
+        cols = [c.text.strip() for c in row.find_elements(By.TAG_NAME, "td")]
+        if cols:
+            all_data.append(cols)
 
-        while True:
-            time.sleep(1.0)
-            rows = get_rows(d, locator)
-            print(f"[INFO] Page {page}: พบ {len(rows)} แถว")
-            for r in rows:
-                # บังคับ 9 คอลัมน์
-                r = (r + [""] * 9)[:9]
-                r[-1] = curdate  # วันที่เก็บข้อมูล
-                all_rows.append(r)
+    driver.quit()
+    return all_data
 
-            nxt = find_next_btn(d)
-            if not nxt:
-                print("[INFO] ไม่มีปุ่มถัดไป -> จบ")
-                break
-            try:
-                d.execute_script("arguments[0].click();", nxt)
-                page += 1
-                WebDriverWait(d, 10).until(lambda x: len(get_rows(x, locator)) > 0)
-            except Exception as e:
-                print(f"[WARN] กดถัดไปไม่สำเร็จ: {e} -> จบ")
-                break
-
-        return all_rows, t0
-    finally:
-        d.quit()
-
-def save_csv(rows):
-    if not rows:
-        print("⚠️ ไม่พบข้อมูล")
+def save_and_upload(all_data):
+    if not all_data:
+        print("⚠️ ไม่พบข้อมูลให้บันทึก")
         return
-    headers = [
-        "ชื่อสถานี","ที่ตั้ง","เวลา","ระดับน้ำ",
-        "ระดับตลิ่ง","ค่าศูนย์เสาระดับ","%ความจุน้ำ",
-        "สถานการณ์","วันที่เก็บข้อมูล"
-    ]
-    fixed = []
-    for r in rows:
-        r = (list(r) + [""] * 9)[:9]
-        fixed.append(r)
-    df = pd.DataFrame(fixed, columns=headers)
-    df["ชื่อสถานี"] = df["ชื่อสถานี"].apply(extract_thai)
 
-    # กันเครื่องหมาย – หรือ '-' ให้เป็นค่าว่าง
-    df = df.replace({"-": "", "–": ""})
+    # ปรับความยาวให้เท่ากัน
+    max_cols = max(len(r) for r in all_data)
+    all_data = [r + [""] * (max_cols - len(r)) for r in all_data]
+
+    # header ภาษาอังกฤษตามเว็บ
+    headers = [
+        "Station", "Location", "Time", "Water_Level",
+        "Riverbank_Level", "Zero_Ref", "Capacity_Percent",
+        "Status", "Collected_Date"
+    ]
+    if len(headers) < max_cols:
+        headers += [f"Extra_{i+1}" for i in range(max_cols - len(headers))]
 
     file_exists = os.path.exists(CSV_OUT)
+    df = pd.DataFrame(all_data, columns=headers)
+
+    # ✅ clean ค่า Station ให้เหลือแค่ชื่อไทย
+    df["Station"] = df["Station"].apply(extract_thai)
+
+    # ✅ เพิ่มวันที่เก็บ
+    df["Collected_Date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # append ลงไฟล์
     df.to_csv(CSV_OUT, mode="a", index=False, encoding="utf-8-sig", header=not file_exists)
     print(f"💾 บันทึก {len(df)} แถว -> {CSV_OUT}")
 
-def main():
-    try:
-        rows, t0 = scrape()
-        # เลือก keep เฉพาะแถวที่มีอักษรไทยในชื่อสถานี (กัน header แฝง)
-        rows = [r for r in rows if re.search(r"[ก-๙]", r[0] if r else "")]
-        save_csv(rows)
-        print(f"⏱ ใช้เวลา: {time.time()-t0:.2f}s")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        sys.exit(1)
+    if ENABLE_GOOGLE_DRIVE_UPLOAD:
+        try:
+            action, file_id = drive_upload_or_update_csv(
+                local_path=CSV_OUT,
+                drive_folder_id=DRIVE_FOLDER_ID,
+                target_name=os.path.basename(CSV_OUT)
+            )
+            print("☁️ Upload:", "อัปเดตไฟล์เดิม" if action == "update" else "อัปโหลดไฟล์ใหม่", f"(id={file_id})")
+        except Exception as e:
+            print("⚠️ อัปโหลดไปยัง Google Drive ล้มเหลว:", e)
 
 if __name__ == "__main__":
-    main()
+    data = scrape()
+    save_and_upload(data)
