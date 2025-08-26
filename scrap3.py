@@ -1,3 +1,5 @@
+# https://nationalthaiwater.onwr.go.th/dam ใช้เก็บข้อมูลแหล่งน้ำ
+
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -19,6 +21,8 @@ driver.get('https://nationalthaiwater.onwr.go.th/dam')
 WebDriverWait(driver, 15).until(
     EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
 )
+
+start_time = time.time()  # 👉 เพิ่มก่อนเริ่ม scrape
 
 def scrape_data(tab_name):
     all_data = []
@@ -83,7 +87,7 @@ def save_data_to_csv(data, dam_type):
 
         df.to_csv(file_path, mode='a', index=False, encoding="utf-8-sig", header=not file_exists)
         print(f"💾 บันทึกข้อมูล {dam_type} ลงไฟล์ {file_path} แล้ว ({len(df)} แถว)")
-
+        
 large_dam_data = scrape_data("แหล่งน้ำขนาดใหญ่")
 
 # ไปยังแท็บ 'แหล่งน้ำขนาดกลาง' อย่างปลอดภัย
@@ -114,3 +118,5 @@ save_data_to_csv(large_dam_data, "large")
 save_data_to_csv(medium_dam_data, "medium")
 
 driver.quit()
+end_time = time.time()  # 👉 หลัง quit()
+print(f"⏱️ ใช้เวลาในการรันทั้งหมด: {end_time - start_time:.2f} วินาที")
