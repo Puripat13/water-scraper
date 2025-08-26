@@ -34,8 +34,7 @@ jobs:
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
       - name: Run scraper (เก็บแหล่งน้ำ ขนาดใหญ่/กลาง)
-        # ⬇️ เปลี่ยนชื่อไฟล์ให้ตรงกับสคริปต์ที่คุณบันทึก
-        run: python dam_scraper.py
+        run: python scrap3.py
 
       - name: Combine "large" + "medium" → one CSV (waterdam_report.csv)
         env:
