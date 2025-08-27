@@ -1,10 +1,10 @@
-name: Combine & Upload Dam CSV
+name: Combine & Upload Dam CSV (Only scrap4.py)
 
 on:
   workflow_dispatch:
   schedule:
-    # 20:10 Asia/Bangkok = 13:10 UTC
-    - cron: "10 13 * * *"
+    # 20:30 Asia/Bangkok = 13:30 UTC
+    - cron: "30 13 * * *"
 
 permissions:
   contents: read
@@ -16,15 +16,15 @@ jobs:
     env:
       TZ: Asia/Bangkok
 
-      # --- ชื่อไฟล์อินพุต/เอาต์พุต (ปรับได้) ---
+      # --- ชื่อไฟล์อินพุต/เอาต์พุต ---
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
       CSV_OUT: waterdam_report.csv
 
       # --- ตั้งค่าอัปโหลดไป Google Drive ---
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                # ตั้ง "false" หากยังไม่อยากอัปโหลด
-      DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}        # <- ใส่ใน Secrets
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # <- ใส่ใน Secrets
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                   # ตั้ง "false" ถ้ายังไม่อยากอัปโหลด
+      DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}           # <- ใส่ใน Secrets
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }} # <- ใส่ใน Secrets (JSON content)
 
     steps:
       - name: Checkout
@@ -35,17 +35,12 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Python packages (inline)
+      - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install pandas==2.2.2 \
-                      google-api-python-client==2.141.0 \
-                      google-auth==2.35.0 \
-                      google-auth-httplib2==0.2.0
+          pip install pandas google-api-python-client google-auth google-auth-httplib2
 
-      # (ถ้าต้องการ: เพิ่ม step ดาวน์โหลด/คัดลอกไฟล์ CSV อินพุตก่อนรันที่นี่)
-
-      - name: Run Combine Script
+      - name: Run scrap4.py (combine & upload)
         run: |
           python scrap4.py
 
@@ -56,3 +51,5 @@ jobs:
           head -n 5 "${CSV_OUT}" || true
           echo "----- TAIL -----"
           tail -n 5 "${CSV_OUT}" || true
+          echo "----- WC -----"
+          wc -l "${CSV_OUT}" || true
