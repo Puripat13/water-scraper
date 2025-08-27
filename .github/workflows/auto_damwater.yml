@@ -18,6 +18,12 @@ jobs:
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
 
+      # ==== ส่งค่าไปเปิดอัปโหลดเข้า GitHub โดยตรงใน scrap3.py ====
+      GITHUB_UPLOAD: "true"
+      GITHUB_REPO: "Puripat13/water-scraper"   # เปลี่ยนได้ตาม repo จริง
+      GITHUB_BRANCH: "main"
+      GITHUB_DEST_DIR: ""                      # เว้นว่าง = ไว้ที่ root ของ repo
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,7 +41,11 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2 requests
+
+      - name: Export GITHUB_TOKEN for Python script
+        # ส่ง token เข้า env ให้ scrap3.py ใช้ GitHub Contents API
+        run: echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
 
       - name: Run scraper (retry up to 3)
         shell: bash
@@ -66,7 +76,7 @@ jobs:
             fi
           done
 
-      # >>> เปลี่ยนสเต็ปนี้: Append/Update โดย "ยึดหัวคอลัมน์เดิม" เสมอ <<<
+      # >>> Append/Update ไป Google Drive โดย "ยึดหัวคอลัมน์เดิม" เสมอ <<<
       - name: Upload CSVs to Google Drive (append/update, keep same columns)
         env:
           DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # โฟลเดอร์ปลายทาง
@@ -134,14 +144,12 @@ jobs:
               old_df = read_csv_any(fh)
 
               # ===== ยึดหัวคอลัมน์เดิม =====
-              # เติมคอลัมน์ที่ใหม่ขาด
               for c in old_df.columns:
                 if c not in new_df.columns:
                   new_df[c] = ""
-              # ตัดคอลัมน์ที่เกิน และ "เรียงลำดับคอลัมน์ให้ตรงกับไฟล์เดิม"
               new_df = new_df[old_df.columns]
 
-              # ต่อแถว + ลบซ้ำแบบทั้งแถว (กันเพิ่มแถวซ้ำ)
+              # ต่อแถว + ลบซ้ำแบบทั้งแถว
               all_df = pd.concat([old_df, new_df], ignore_index=True)
               all_df.drop_duplicates(keep="last", inplace=True)
 
