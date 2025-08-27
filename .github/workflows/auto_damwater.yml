@@ -1,4 +1,4 @@
-name: Scrape Dam (Large & Medium)
+name: Auto Scrape Dam (Large & Medium)
 
 on:
   workflow_dispatch: {}
