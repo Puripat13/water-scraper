@@ -47,7 +47,7 @@ jobs:
 
       - name: Run Combine Script
         run: |
-          python combine_waterdam.py
+          python scrap4.py
 
       - name: Show Output Head/Tail
         if: always()
