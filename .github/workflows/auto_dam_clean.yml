@@ -16,15 +16,15 @@ jobs:
     env:
       TZ: Asia/Bangkok
 
-      # --- ชื่อไฟล์อินพุต/เอาต์พุต (ปรับได้) ---
+      # --- ชื่อไฟล์อินพุต/เอาต์พุต ---
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
       CSV_OUT: waterdam_report.csv
 
-      # --- ตั้งค่าอัปโหลดไป Google Drive ---
+      # --- อัปโหลดไป Google Drive ---
       ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                   # ตั้ง "false" หากยังไม่อยากอัปโหลด
       DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}           # <- ใส่ใน Secrets
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }} # <- ใส่ใน Secrets (เป็นสตริง JSON ทั้งไฟล์)
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }} # <- ใส่ใน Secrets (เนื้อหา JSON ทั้งไฟล์)
 
     steps:
       - name: Checkout
@@ -35,8 +35,7 @@ jobs:
         with:
           python-version: "3.10"
 
-      # ต้องมี Chrome สำหรับ Selenium ใน scrap3.py
-      - name: Setup Google Chrome
+      - name: Setup Google Chrome (for Selenium in scrap3.py)
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
@@ -46,18 +45,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      # ตรวจ Secrets ถ้าจะอัปโหลด
+      # ✅ แก้แล้ว: เช็ก Secrets ผ่าน env (ไม่พังจาก JSON หลายบรรทัด)
       - name: Sanity check Drive secrets
+        env:
+          ENABLE_GOOGLE_DRIVE_UPLOAD: ${{ env.ENABLE_GOOGLE_DRIVE_UPLOAD }}
+          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
         run: |
-          if [ "${{ env.ENABLE_GOOGLE_DRIVE_UPLOAD }}" = "true" ]; then
-            test -n "${{ secrets.PURIPAT_ID }}" || (echo "❌ Missing secret PURIPAT_ID" && exit 1)
-            test -n "${{ secrets.SERVICE_ACCOUNT }}" || (echo "❌ Missing secret SERVICE_ACCOUNT" && exit 1)
+          set -euo pipefail
+          if [ "${ENABLE_GOOGLE_DRIVE_UPLOAD}" = "true" ]; then
+            if [ -z "${DRIVE_FOLDER_ID:-}" ]; then
+              echo "❌ Missing secret PURIPAT_ID"; exit 1
+            fi
+            if [ -z "${SERVICE_ACCOUNT_JSON:-}" ]; then
+              echo "❌ Missing secret SERVICE_ACCOUNT"; exit 1
+            fi
             echo "✅ Secrets OK"
           else
-            echo "ℹ️ ENABLE_GOOGLE_DRIVE_UPLOAD=false -> จะไม่อัปโหลดขึ้น Drive"
+            echo "ℹ️ ENABLE_GOOGLE_DRIVE_UPLOAD=false -> skip Drive upload"
           fi
 
-      # ---------- 1) รันตัว scraper (scrap3.py) ให้สร้าง CSV อินพุต ----------
+      # ---------- 1) รัน scraper สร้างไฟล์อินพุต ----------
       - name: Run scrap3.py (generate CSVs, retry up to 3)
         shell: bash
         run: |
@@ -80,15 +88,13 @@ jobs:
         run: |
           for f in "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}"; do
             if [ -f "$f" ]; then
-              echo "== $f =="
-              head -n 5 "$f"
+              echo "== $f =="; head -n 5 "$f"
             else
-              echo "!! Missing $f"
-              exit 1
+              echo "!! Missing $f"; exit 1
             fi
           done
 
-      # ---------- 2) รวม + อัปโหลด (scrap4.py) ----------
+      # ---------- 2) รวม + อัปโหลด ----------
       - name: Run Combine Script (scrap4.py)
         run: |
           python scrap4.py
@@ -96,9 +102,6 @@ jobs:
       - name: Show Output Head/Tail
         if: always()
         run: |
-          echo "----- HEAD -----"
-          head -n 5 "${CSV_OUT}" || true
-          echo "----- TAIL -----"
-          tail -n 5 "${CSV_OUT}" || true
-          echo "----- WC -----"
-          wc -l "${CSV_OUT}" || true
+          echo "----- HEAD -----"; head -n 5 "${CSV_OUT}" || true
+          echo "----- TAIL -----"; tail -n 5 "${CSV_OUT}" || true
+          echo "----- WC -----"; wc -l "${CSV_OUT}" || true
