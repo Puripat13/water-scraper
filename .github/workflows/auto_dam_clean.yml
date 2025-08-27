@@ -1,30 +1,30 @@
-name: Combine & Upload Dam CSV
+name: Auto Scrape + Combine Dam (Large & Medium)
 
 on:
-  workflow_dispatch:
   schedule:
-    # 20:10 Asia/Bangkok = 13:10 UTC
-    - cron: "10 13 * * *"
+    # 20:00 Asia/Bangkok = 13:00 UTC
+    - cron: "0 13 * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  combine-upload:
+  run-scraper-and-combine:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       TZ: Asia/Bangkok
 
-      # --- ชื่อไฟล์อินพุต/เอาต์พุต (ปรับได้) ---
+      # ===== ชื่อไฟล์ I/O (ให้ตรงกับสคริปต์ของคุณ) =====
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
       CSV_OUT: waterdam_report.csv
 
-      # --- ตั้งค่าอัปโหลดไป Google Drive ---
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                # ตั้ง "false" หากยังไม่อยากอัปโหลด
-      DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}        # <- ใส่ใน Secrets
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # <- ใส่ใน Secrets
+      # ===== อัปโหลด Drive สำหรับ combine (scrap4.py) =====
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                     # ตั้ง "false" ถ้ายังไม่อยากอัปโหลด
+      DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}             # โฟลเดอร์ไอดี
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # เนื้อหา JSON ของ SA ทั้งไฟล์
 
     steps:
       - name: Checkout
@@ -35,24 +35,83 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Setup Google Chrome (for Selenium in scrap3.py)
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
       - name: Install Python packages (inline)
         run: |
           python -m pip install --upgrade pip
-          pip install pandas==2.2.2 \
-                      google-api-python-client==2.141.0 \
-                      google-auth==2.35.0 \
-                      google-auth-httplib2==0.2.0
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      # (ถ้าต้องการ: เพิ่ม step ดาวน์โหลด/คัดลอกไฟล์ CSV อินพุตก่อนรันที่นี่)
+      # ---------- 1) SCRAPE (scrap3.py) ----------
+      - name: Run scraper (retry up to 3)
+        shell: bash
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt #$i at $(date)"
+            if python scrap3.py; then
+              echo "Scrape success"
+              break
+            fi
+            echo "Sleep before retry..."
+            sleep 20
+            if [ "$i" = "3" ]; then
+              echo "All attempts failed."
+              exit 1
+            fi
+          done
 
-      - name: Run Combine Script
+      - name: Preview CSV heads (large/medium)
+        run: |
+          for f in "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}"; do
+            if [ -f "$f" ]; then
+              echo "== $f =="
+              head -n 5 "$f"
+            else
+              echo "!! Missing $f"
+              exit 1
+            fi
+          done
+
+      # ---------- 2) COMBINE (scrap4.py) ----------
+      # scrap4.py คือสคริปต์ combine ของคุณ (อ่าน ENV เหมือนที่ตั้งไว้ด้านบน)
+      - name: Run combine (scrap4.py) -> make $CSV_OUT and upload to Drive
         run: |
           python scrap4.py
 
-      - name: Show Output Head/Tail
+      - name: Show Output Head/Tail of $CSV_OUT
         if: always()
         run: |
           echo "----- HEAD -----"
           head -n 5 "${CSV_OUT}" || true
           echo "----- TAIL -----"
           tail -n 5 "${CSV_OUT}" || true
+          echo "----- WC -----"
+          wc -l "${CSV_OUT}" || true
+
+      # ---------- 3) Optional: เก็บ artifact + commit กลับ repo ----------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dam-csv-${{ github.run_id }}
+          path: |
+            ${{ env.CSV_LARGE }}
+            ${{ env.CSV_MEDIUM }}
+            ${{ env.CSV_OUT }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Commit CSVs back to repo (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}" "${{ env.CSV_OUT }}" || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Update dam CSVs & combined: $(date +'%Y-%m-%d %H:%M %Z')"
+            git push
+          else
+            echo "No changes to commit."
+          fi
