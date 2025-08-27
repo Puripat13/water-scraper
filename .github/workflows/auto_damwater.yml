@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 20
     env:
       TZ: Asia/Bangkok
-      # รายชื่อไฟล์ผลลัพธ์จากสคริปต์ของคุณ
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
 
@@ -67,10 +66,11 @@ jobs:
             fi
           done
 
-      - name: Upload CSVs to Google Drive (append/update)
+      # >>> เปลี่ยนสเต็ปนี้: Append/Update โดย "ยึดหัวคอลัมน์เดิม" เสมอ <<<
+      - name: Upload CSVs to Google Drive (append/update, keep same columns)
         env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # <-- ใส่โฟลเดอร์ ID ของ Shared Drive/โฟลเดอร์ปลายทาง
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # <-- ใส่ JSON (string) ของ Service Account
+          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # โฟลเดอร์ปลายทาง
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อหา JSON ของ SA เป็นสตริง
           CSV_LARGE: ${{ env.CSV_LARGE }}
           CSV_MEDIUM: ${{ env.CSV_MEDIUM }}
         run: |
@@ -86,6 +86,12 @@ jobs:
           CSV_FILES = [os.getenv("CSV_LARGE", "waterdam_report_large.csv"),
                        os.getenv("CSV_MEDIUM", "waterdam_report_medium.csv")]
 
+          def read_csv_any(x):
+            try:
+              return pd.read_csv(x, dtype=str)
+            except Exception:
+              return pd.read_csv(x, dtype=str, encoding="utf-8-sig")
+
           # init drive
           info = json.loads(SA_JSON)
           creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
@@ -99,23 +105,19 @@ jobs:
               print(f"❌ Not found local CSV: {local_csv}", file=sys.stderr)
               return
 
+            new_df = read_csv_any(local_csv)
+
             # find existing file in folder
             fname = os.path.basename(local_csv).replace("'", "\\'")
             q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
             res = drive.files().list(
-                q=q, fields="files(id,name,mimeType)",
-                supportsAllDrives=True, includeItemsFromAllDrives=True
+              q=q, fields="files(id,name,mimeType)",
+              supportsAllDrives=True, includeItemsFromAllDrives=True
             ).execute()
             files = res.get("files", [])
 
-            # load new df
-            try:
-              new_df = pd.read_csv(local_csv)
-            except Exception:
-              new_df = pd.read_csv(local_csv, encoding="utf-8-sig")
-
             if files:
-              fid = files[0]["id"]
+              fid  = files[0]["id"]
               mime = files[0]["mimeType"]
               if mime.startswith("application/vnd.google-apps"):
                 print(f"❌ '{fname}' on Drive is a Google file (e.g., Sheets). Use Sheets API to append.", file=sys.stderr)
@@ -129,38 +131,35 @@ jobs:
               while not done:
                 status, done = downloader.next_chunk()
               fh.seek(0)
-              try:
-                old_df = pd.read_csv(fh)
-              except Exception:
-                fh.seek(0)
-                old_df = pd.read_csv(fh, encoding="utf-8-sig")
+              old_df = read_csv_any(fh)
 
-              # concat & drop dup (schema อาจต่างกันระหว่าง large/medium -> ใช้แบบทั้งแถว)
+              # ===== ยึดหัวคอลัมน์เดิม =====
+              # เติมคอลัมน์ที่ใหม่ขาด
+              for c in old_df.columns:
+                if c not in new_df.columns:
+                  new_df[c] = ""
+              # ตัดคอลัมน์ที่เกิน และ "เรียงลำดับคอลัมน์ให้ตรงกับไฟล์เดิม"
+              new_df = new_df[old_df.columns]
+
+              # ต่อแถว + ลบซ้ำแบบทั้งแถว (กันเพิ่มแถวซ้ำ)
               all_df = pd.concat([old_df, new_df], ignore_index=True)
               all_df.drop_duplicates(keep="last", inplace=True)
-
-              # optional: ถ้าคุณมีคอลัมน์เวลา เช่น 'Data_Time' หรือ 'วันที่' ให้ลอง sort
-              for cand in ["Data_Time", "DateTime", "วันที่", "Date", "Time"]:
-                if cand in all_df.columns:
-                  try:
-                    all_df[cand] = pd.to_datetime(all_df[cand], errors="coerce")
-                    all_df.sort_values(cand, inplace=True)
-                    break
-                  except Exception:
-                    pass
 
               tmp_path = f"__merged_{fname}"
               all_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
 
               media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
               drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Updated (appended): {fname} (fileId={fid})")
+              print(f"✅ Updated (appended with preserved columns): {fname} (fileId={fid})")
 
             else:
-              meta = {"name": fname, "parents": [FOLDER_ID]}
-              media = MediaFileUpload(local_csv, mimetype="text/csv", resumable=True)
+              # ยังไม่มีไฟล์บน Drive -> ใช้ไฟล์ใหม่เป็นมาตรฐาน
+              tmp_path = f"__init_{fname}"
+              new_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+              meta  = {"name": fname, "parents": [FOLDER_ID]}
+              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
               created = drive.files().create(
-                  body=meta, media_body=media, fields="id", supportsAllDrives=True
+                body=meta, media_body=media, fields="id", supportsAllDrives=True
               ).execute()
               print(f"✅ Created new: {fname} (fileId={created['id']})")
 
