@@ -44,7 +44,7 @@ jobs:
           set -e
           for i in 1 2 3; do
             echo "Attempt #$i at $(date)"
-            if python scrape_dam.py; then
+            if python scrap3.py; then
               echo "Scrape success"
               break
             fi
