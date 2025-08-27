@@ -1,20 +1,26 @@
-name: Auto Scrape Dam (Large & Medium)
+name: Scrape Dam (Large & Medium)
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: '0 13 * * *'   # รันทุกวัน 20:00 น. (เวลาไทย, UTC+7)
-  workflow_dispatch:
+    # 20:00 Asia/Bangkok = 13:00 UTC
+    - cron: "0 13 * * *"
+
+permissions:
+  contents: write  # สำหรับ commit ผลลัพธ์กลับเข้า repo
+
+concurrency:
+  group: scrape-dam
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Bangkok
+  PYTHONUTF8: "1"
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      TZ: Asia/Bangkok
-      # รายชื่อไฟล์ผลลัพธ์จากสคริปต์ของคุณ
-      CSV_LARGE: waterdam_report_large.csv
-      CSV_MEDIUM: waterdam_report_medium.csv
-      CSV_COMBINED: waterdam_report.csv
 
     steps:
       - name: Checkout
@@ -23,150 +29,71 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Setup Google Chrome (for Selenium)
+      - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Show Chrome version
+        run: |
+          google-chrome --version || true
+          which google-chrome || true
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
+          pip install selenium pandas
 
-      - name: Run scraper (เก็บแหล่งน้ำ ขนาดใหญ่/กลาง)
-        run: python scrap3.py
-
-      - name: Combine "large" + "medium" → one CSV (waterdam_report.csv)
-        env:
-          CSV_LARGE: ${{ env.CSV_LARGE }}
-          CSV_MEDIUM: ${{ env.CSV_MEDIUM }}
-          CSV_COMBINED: ${{ env.CSV_COMBINED }}
+      - name: Run scraper (with basic retry)
+        shell: bash
         run: |
-          python - <<'PY'
-          import os
-          import pandas as pd
+          set -e
+          echo "Start scrape at $(date)"
+          for i in 1 2 3; do
+            echo "Attempt #$i"
+            if python scrape_dam.py; then
+              echo "Scrape success"
+              break
+            fi
+            echo "Sleep before retry..."
+            sleep 20
+            if [ "$i" = "3" ]; then
+              echo "All attempts failed."
+              exit 1
+            fi
+          done
 
-          large = os.getenv("CSV_LARGE", "waterdam_report_large.csv")
-          medium = os.getenv("CSV_MEDIUM", "waterdam_report_medium.csv")
-          combined = os.getenv("CSV_COMBINED", "waterdam_report.csv")
-
-          if not os.path.exists(large) and not os.path.exists(medium):
-              raise SystemExit("❌ ไม่พบไฟล์ large และ medium จากสคริปต์")
-
-          dfs = []
-          if os.path.exists(large):
-              dfl = pd.read_csv(large, dtype=str)
-              dfl["Dam_Size"] = "Large"
-              dfs.append(dfl)
-          if os.path.exists(medium):
-              dfm = pd.read_csv(medium, dtype=str)
-              dfm["Dam_Size"] = "Medium"
-              dfs.append(dfm)
-
-          all_df = pd.concat(dfs, ignore_index=True, sort=False)
-
-          # ลบแถวซ้ำแบบ all-columns (กันซ้ำจากการรันรายวัน)
-          all_df.drop_duplicates(keep="last", inplace=True)
-
-          # พยายามเรียงตามเวลา ถ้ามีคอลัมน์วันที่อยู่คอลัมน์สุดท้าย (ตามโค้ดคุณแนบวันที่ไว้ท้าย)
-          # หรือมีคอลัมน์ชื่อ Date/DateTime
-          date_cols = [c for c in all_df.columns if c.lower() in ("date","datetime","data_time","time","วันที่","เวลา")]
-          try:
-              if date_cols:
-                  c = date_cols[-1]
-                  all_df[c] = pd.to_datetime(all_df[c], errors="coerce", dayfirst=True)
-                  all_df.sort_values(c, inplace=True)
-          except Exception:
-              pass
-
-          all_df.to_csv(combined, index=False, encoding="utf-8-sig")
-          print(f"✅ Combined saved → {combined}  rows={len(all_df)}")
-          PY
-
-      - name: Append & Upload CSVs to Google Drive (Shared Drive)
-        env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}      # ใส่ Folder ID ของ Shared Drive/โฟลเดอร์ปลายทาง
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อ JSON ของ Service Account (ทั้งก้อน)
-          CSV_LARGE: ${{ env.CSV_LARGE }}
-          CSV_MEDIUM: ${{ env.CSV_MEDIUM }}
-          CSV_COMBINED: ${{ env.CSV_COMBINED }}
+      - name: List outputs
         run: |
-          python - <<'PY'
-          import os, io, json, sys
-          import pandas as pd
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+          ls -al
+          echo "Preview CSV heads:"
+          for f in waterdam_report_large.csv waterdam_report_medium.csv; do
+            if [ -f "$f" ]; then
+              echo "== $f =="
+              head -n 5 "$f"
+            fi
+          done
 
-          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
-          SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
-          files_to_handle = [os.getenv("CSV_LARGE"), os.getenv("CSV_MEDIUM"), os.getenv("CSV_COMBINED")]
-          files_to_handle = [f for f in files_to_handle if f and os.path.exists(f)]
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dam-csv-${{ github.run_id }}
+          path: |
+            waterdam_report_large.csv
+            waterdam_report_medium.csv
+          if-no-files-found: warn
+          retention-days: 7
 
-          if not files_to_handle:
-              print("❌ ไม่มีไฟล์ CSV ให้ส่งขึ้น Drive", file=sys.stderr)
-              sys.exit(1)
-
-          info = json.loads(SA_JSON)
-          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # ตรวจสอบสิทธิ์เข้าถึงโฟลเดอร์ (รองรับ Shared Drive)
-          drive.files().get(fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True).execute()
-
-          def find_existing(fid_folder, name):
-              q = f"name = '{name.replace(\"'\",\"\\\\'\")}' and '{fid_folder}' in parents and trashed = false"
-              res = drive.files().list(
-                  q=q,
-                  fields="files(id,name,mimeType)",
-                  supportsAllDrives=True,
-                  includeItemsFromAllDrives=True,
-              ).execute()
-              return res.get("files", [])
-
-          for local_csv in files_to_handle:
-              print(f"\n===== Upload/Append: {local_csv} =====")
-              base = os.path.basename(local_csv)
-
-              exist = find_existing(FOLDER_ID, base)
-              new_df = pd.read_csv(local_csv, dtype=str)
-
-              if exist:
-                  fid = exist[0]["id"]
-                  mime = exist[0]["mimeType"]
-
-                  if mime.startswith("application/vnd.google-apps"):
-                      print("❌ ไฟล์บนไดรฟ์เป็น Google Sheets (ต้องใช้ Sheets API) — ข้ามไฟล์นี้ก่อน", file=sys.stderr)
-                      continue
-
-                  # ดาวน์โหลดของเดิม
-                  request = drive.files().get_media(fileId=fid)
-                  fh = io.BytesIO()
-                  downloader = MediaIoBaseDownload(fh, request)
-                  done = False
-                  while not done:
-                      status, done = downloader.next_chunk()
-                  fh.seek(0)
-                  try:
-                      old_df = pd.read_csv(fh, dtype=str)
-                  except Exception:
-                      fh.seek(0)
-                      old_df = pd.read_csv(fh, dtype=str, encoding="utf-8-sig")
-
-                  # รวม + ลบซ้ำ (all-columns)
-                  merged = pd.concat([old_df, new_df], ignore_index=True, sort=False).drop_duplicates(keep="last")
-                  tmp = "__tmp_upload.csv"
-                  merged.to_csv(tmp, index=False, encoding="utf-8-sig")
-
-                  media = MediaFileUpload(tmp, mimetype="text/csv", resumable=True)
-                  drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-                  print(f"✅ Updated (append+dedup): {base}  rows={len(merged)}")
-
-              else:
-                  meta = {"name": base, "parents": [FOLDER_ID]}
-                  media = MediaFileUpload(local_csv, mimetype="text/csv", resumable=True)
-                  created = drive.files().create(
-                      body=meta, media_body=media, fields="id", supportsAllDrives=True
-                  ).execute()
-                  print(f"✅ Created new: {base} (fileId={created['id']})")
-          PY
+      - name: Commit CSVs back to repo (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add waterdam_report_large.csv waterdam_report_medium.csv || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Update dam CSVs: $(date +'%Y-%m-%d %H:%M %Z')"
+            git push
+          else
+            echo "No changes to commit."
+          fi
