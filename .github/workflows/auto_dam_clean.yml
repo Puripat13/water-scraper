@@ -1,10 +1,10 @@
-name: Combine & Upload Dam CSV (Only scrap4.py)
+name: Combine & Upload Dam CSV
 
 on:
   workflow_dispatch:
   schedule:
-    # 20:30 Asia/Bangkok = 13:30 UTC
-    - cron: "30 13 * * *"
+    # 20:10 Asia/Bangkok = 13:10 UTC
+    - cron: "10 13 * * *"
 
 permissions:
   contents: read
@@ -12,19 +12,19 @@ permissions:
 jobs:
   combine-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       TZ: Asia/Bangkok
 
-      # --- ชื่อไฟล์อินพุต/เอาต์พุต ---
+      # --- ชื่อไฟล์อินพุต/เอาต์พุต (ปรับได้) ---
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
       CSV_OUT: waterdam_report.csv
 
       # --- ตั้งค่าอัปโหลดไป Google Drive ---
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                   # ตั้ง "false" ถ้ายังไม่อยากอัปโหลด
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"                   # ตั้ง "false" หากยังไม่อยากอัปโหลด
       DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}           # <- ใส่ใน Secrets
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }} # <- ใส่ใน Secrets (JSON content)
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }} # <- ใส่ใน Secrets (เป็นสตริง JSON ทั้งไฟล์)
 
     steps:
       - name: Checkout
@@ -35,12 +35,61 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Python packages
+      # ต้องมี Chrome สำหรับ Selenium ใน scrap3.py
+      - name: Setup Google Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Install Python packages (inline)
         run: |
           python -m pip install --upgrade pip
-          pip install pandas google-api-python-client google-auth google-auth-httplib2
+          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      - name: Run scrap4.py (combine & upload)
+      # ตรวจ Secrets ถ้าจะอัปโหลด
+      - name: Sanity check Drive secrets
+        run: |
+          if [ "${{ env.ENABLE_GOOGLE_DRIVE_UPLOAD }}" = "true" ]; then
+            test -n "${{ secrets.PURIPAT_ID }}" || (echo "❌ Missing secret PURIPAT_ID" && exit 1)
+            test -n "${{ secrets.SERVICE_ACCOUNT }}" || (echo "❌ Missing secret SERVICE_ACCOUNT" && exit 1)
+            echo "✅ Secrets OK"
+          else
+            echo "ℹ️ ENABLE_GOOGLE_DRIVE_UPLOAD=false -> จะไม่อัปโหลดขึ้น Drive"
+          fi
+
+      # ---------- 1) รันตัว scraper (scrap3.py) ให้สร้าง CSV อินพุต ----------
+      - name: Run scrap3.py (generate CSVs, retry up to 3)
+        shell: bash
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt #$i at $(date)"
+            if python scrap3.py; then
+              echo "Scrape success"
+              break
+            fi
+            echo "Sleep before retry..."
+            sleep 20
+            if [ "$i" = "3" ]; then
+              echo "All attempts failed."
+              exit 1
+            fi
+          done
+
+      - name: Preview CSV heads (inputs)
+        run: |
+          for f in "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}"; do
+            if [ -f "$f" ]; then
+              echo "== $f =="
+              head -n 5 "$f"
+            else
+              echo "!! Missing $f"
+              exit 1
+            fi
+          done
+
+      # ---------- 2) รวม + อัปโหลด (scrap4.py) ----------
+      - name: Run Combine Script (scrap4.py)
         run: |
           python scrap4.py
 
