@@ -4,7 +4,7 @@ on:
   schedule:
     # รันทุกวันเวลา 20:00 ไทย (UTC+7) = 13:00 UTC
     - cron: "0 13 * * *"
-  workflow_dispatch:  # รันด้วยมือได้
+  workflow_dispatch:
 
 jobs:
   run-scraper:
@@ -24,20 +24,18 @@ jobs:
         run: |
           pip install selenium pandas
 
-      - name: Install Chrome
+      - name: Install Chromium
         run: |
           sudo apt-get update
           sudo apt-get install -y chromium-browser chromium-chromedriver
-          echo "CHROME_BIN=/usr/bin/chromium-browser" >> $GITHUB_ENV
-          echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
 
       - name: Run scraper
-        run: python scrap3.py
+        run: python scrap3.py   # 👉 ปรับเป็นสคริปต์ที่คุณต้องการให้รัน
 
       - name: Commit & Push CSV
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-          git add waterdam_report_*.csv
-          git commit -m "Update water dam data [skip ci]" || echo "No changes"
+          git add *.csv
+          git commit -m "Update dam water data [skip ci]" || echo "No changes"
           git push
