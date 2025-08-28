@@ -1,198 +1,43 @@
-name: Auto Scrape Dam (Large & Medium) 
+name: Scrape Water Dam Data
 
 on:
   schedule:
-    # 20:00 Asia/Bangkok = 13:00 UTC
+    # รันทุกวันเวลา 20:00 ไทย (UTC+7) = 13:00 UTC
     - cron: "0 13 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+  workflow_dispatch:  # รันด้วยมือได้
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      TZ: Asia/Bangkok
-      CSV_LARGE: waterdam_report_large.csv
-      CSV_MEDIUM: waterdam_report_medium.csv
-
-      # ==== ส่งค่าไปเปิดอัปโหลดเข้า GitHub โดยตรงใน scrap3.py ====
-      GITHUB_UPLOAD: "true"
-      GITHUB_REPO: "Puripat13/water-scraper"   # เปลี่ยนได้ตาม repo จริง
-      GITHUB_BRANCH: "main"
-      GITHUB_DEST_DIR: ""                      # เว้นว่าง = ไว้ที่ root ของ repo
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - name: Setup Google Chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-
-      - name: Install Python packages
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install selenium pandas google-api-python-client google-auth google-auth-httplib2 requests
+          pip install selenium pandas
 
-      - name: Export GITHUB_TOKEN for Python script
-        # ส่ง token เข้า env ให้ scrap3.py ใช้ GitHub Contents API
-        run: echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
-
-      - name: Run scraper (retry up to 3)
-        shell: bash
+      - name: Install Chrome
         run: |
-          set -e
-          for i in 1 2 3; do
-            echo "Attempt #$i at $(date)"
-            if python scrap3.py; then
-              echo "Scrape success"
-              break
-            fi
-            echo "Sleep before retry..."
-            sleep 20
-            if [ "$i" = "3" ]; then
-              echo "All attempts failed."
-              exit 1
-            fi
-          done
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+          echo "CHROME_BIN=/usr/bin/chromium-browser" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
 
-      - name: Preview CSV heads
+      - name: Run scraper
+        run: python scrape_dam.py
+
+      - name: Commit & Push CSV
         run: |
-          for f in "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}"; do
-            if [ -f "$f" ]; then
-              echo "== $f =="
-              head -n 5 "$f"
-            else
-              echo "!! Missing $f"
-            fi
-          done
-
-      # >>> Append/Update ไป Google Drive โดย "ยึดหัวคอลัมน์เดิม" เสมอ <<<
-      - name: Upload CSVs to Google Drive (append/update, keep same columns)
-        env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}            # โฟลเดอร์ปลายทาง
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}  # เนื้อหา JSON ของ SA เป็นสตริง
-          CSV_LARGE: ${{ env.CSV_LARGE }}
-          CSV_MEDIUM: ${{ env.CSV_MEDIUM }}
-        run: |
-          python - <<'PY'
-          import os, io, json, sys
-          import pandas as pd
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-
-          FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]
-          SA_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
-          CSV_FILES = [os.getenv("CSV_LARGE", "waterdam_report_large.csv"),
-                       os.getenv("CSV_MEDIUM", "waterdam_report_medium.csv")]
-
-          def read_csv_any(x):
-            try:
-              return pd.read_csv(x, dtype=str)
-            except Exception:
-              return pd.read_csv(x, dtype=str, encoding="utf-8-sig")
-
-          # init drive
-          info = json.loads(SA_JSON)
-          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # verify folder (supports shared drive)
-          drive.files().get(fileId=FOLDER_ID, fields="id,name,driveId", supportsAllDrives=True).execute()
-
-          def upload_or_append(local_csv: str):
-            if not os.path.exists(local_csv):
-              print(f"❌ Not found local CSV: {local_csv}", file=sys.stderr)
-              return
-
-            new_df = read_csv_any(local_csv)
-
-            # find existing file in folder
-            fname = os.path.basename(local_csv).replace("'", "\\'")
-            q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
-            res = drive.files().list(
-              q=q, fields="files(id,name,mimeType)",
-              supportsAllDrives=True, includeItemsFromAllDrives=True
-            ).execute()
-            files = res.get("files", [])
-
-            if files:
-              fid  = files[0]["id"]
-              mime = files[0]["mimeType"]
-              if mime.startswith("application/vnd.google-apps"):
-                print(f"❌ '{fname}' on Drive is a Google file (e.g., Sheets). Use Sheets API to append.", file=sys.stderr)
-                return
-
-              # download old
-              request = drive.files().get_media(fileId=fid)
-              fh = io.BytesIO()
-              downloader = MediaIoBaseDownload(fh, request)
-              done = False
-              while not done:
-                status, done = downloader.next_chunk()
-              fh.seek(0)
-              old_df = read_csv_any(fh)
-
-              # ===== ยึดหัวคอลัมน์เดิม =====
-              for c in old_df.columns:
-                if c not in new_df.columns:
-                  new_df[c] = ""
-              new_df = new_df[old_df.columns]
-
-              # ต่อแถว + ลบซ้ำแบบทั้งแถว
-              all_df = pd.concat([old_df, new_df], ignore_index=True)
-              all_df.drop_duplicates(keep="last", inplace=True)
-
-              tmp_path = f"__merged_{fname}"
-              all_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
-
-              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
-              drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
-              print(f"✅ Updated (appended with preserved columns): {fname} (fileId={fid})")
-
-            else:
-              # ยังไม่มีไฟล์บน Drive -> ใช้ไฟล์ใหม่เป็นมาตรฐาน
-              tmp_path = f"__init_{fname}"
-              new_df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
-              meta  = {"name": fname, "parents": [FOLDER_ID]}
-              media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=True)
-              created = drive.files().create(
-                body=meta, media_body=media, fields="id", supportsAllDrives=True
-              ).execute()
-              print(f"✅ Created new: {fname} (fileId={created['id']})")
-
-          for f in CSV_FILES:
-            upload_or_append(f)
-          PY
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dam-csv-${{ github.run_id }}
-          path: |
-            ${{ env.CSV_LARGE }}
-            ${{ env.CSV_MEDIUM }}
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Commit CSVs back to repo (if changed)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}" || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Update dam CSVs: $(date +'%Y-%m-%d %H:%M %Z')"
-            git push
-          else
-            echo "No changes to commit."
-          fi
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add waterdam_report_*.csv
+          git commit -m "Update water dam data [skip ci]" || echo "No changes"
+          git push
