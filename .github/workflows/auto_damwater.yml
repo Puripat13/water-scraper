@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install selenium pandas
+          pip install selenium pandas gspread oauth2client requests
 
       - name: Install Chromium
         run: |
@@ -31,10 +31,7 @@ jobs:
       - name: Run scraper
         run: python scrap3.py   
 
-      - name: Commit & Push CSV
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add *.csv
-          git commit -m "Update dam water data [skip ci]" || echo "No changes"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:${{ github.ref }}
+      - name: Run ETL & Upload to Google Sheets
+        env:
+          SERVICE_ACCOUNT: ${{ secrets.SERVICE_ACCOUNT }}
+        run: python etl_upload.py
