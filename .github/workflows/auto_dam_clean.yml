@@ -11,7 +11,8 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # ยืดเวลาให้มากขึ้นเพราะเว็บเพจมีหลายร้อยหน้า
+    timeout-minutes: 60
     env:
       CSV_LARGE: waterdam_report_large.csv
       CSV_MEDIUM: waterdam_report_medium.csv
@@ -19,29 +20,85 @@ jobs:
       ENABLE_GOOGLE_DRIVE_UPLOAD: "true"
       DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
+      # จำกัดจำนวนหน้าสูงสุดต่อแท็บ (0 = ไม่จำกัด)
+      SCRAPE_MAX_PAGES: "500"
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+
       - uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
+
       - name: Install packages
         run: |
           python -m pip install --upgrade pip
           pip install selenium pandas google-api-python-client google-auth google-auth-httplib2
 
-      - name: Run scrap3.py
-        run: python scrap3.py
+      # ---------- Scrape (retry x3) ----------
+      - name: Run scrap3.py (retry up to 3)
+        shell: bash
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt #$i at $(date)"
+            if python scrap3.py; then
+              echo "Scrape success"
+              break
+            fi
+            echo "Sleep before retry..."
+            sleep 20
+            if [ "$i" = "3" ]; then
+              echo "All attempts failed."
+              exit 1
+            fi
+          done
 
+      - name: Preview inputs head (if exist)
+        run: |
+          for f in "${{ env.CSV_LARGE }}" "${{ env.CSV_MEDIUM }}"; do
+            if [ -f "$f" ]; then
+              echo "== $f =="; head -n 5 "$f" || true
+              wc -l "$f" || true
+            else
+              echo "!! Missing $f"
+            fi
+          done
+
+      # ---------- Combine & upload (only if both inputs exist) ----------
       - name: Run scrap4.py
-        run: python scrap4.py
+        shell: bash
+        run: |
+          if [ -f "${{ env.CSV_LARGE }}" ] && [ -f "${{ env.CSV_MEDIUM }}" ]; then
+            python scrap4.py
+          else
+            echo "Skip scrap4.py: input CSVs not found."
+            exit 1
+          fi
 
       - name: Show combined head/tail
         if: always()
         run: |
-          echo "----- HEAD -----"; head -n 5 "${CSV_OUT}" || true
-          echo "----- TAIL -----"; tail -n 5 "${CSV_OUT}" || true
-          wc -l "${CSV_OUT}" || true
+          if [ -f "${CSV_OUT}" ]; then
+            echo "----- HEAD -----"; head -n 5 "${CSV_OUT}" || true
+            echo "----- TAIL -----"; tail -n 5 "${CSV_OUT}" || true
+            wc -l "${CSV_OUT}" || true
+          else
+            echo "No combined file."
+          fi
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dam-csv-${{ github.run_id }}
+          path: |
+            ${{ env.CSV_LARGE }}
+            ${{ env.CSV_MEDIUM }}
+            ${{ env.CSV_OUT }}
+          if-no-files-found: ignore
+          retention-days: 7
