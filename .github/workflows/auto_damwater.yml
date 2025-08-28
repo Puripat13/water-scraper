@@ -32,7 +32,7 @@ jobs:
           echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
 
       - name: Run scraper
-        run: python scrape_dam.py
+        run: python scrap3.py
 
       - name: Commit & Push CSV
         run: |
