@@ -2,8 +2,7 @@ name: Scrape Water Dam Data
 
 on:
   schedule:
-    # รันทุกวันเวลา 20:00 ไทย (UTC+7) = 13:00 UTC
-    - cron: "0 13 * * *"
+    - cron: "0 13 * * *"   # ทุกวัน 20:00 ไทย
   workflow_dispatch:
 
 jobs:
@@ -30,7 +29,7 @@ jobs:
           sudo apt-get install -y chromium-browser chromium-chromedriver
 
       - name: Run scraper
-        run: python scrap3.py   # 👉 ปรับเป็นสคริปต์ที่คุณต้องการให้รัน
+        run: python scrap3.py   
 
       - name: Commit & Push CSV
         run: |
@@ -38,4 +37,4 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git add *.csv
           git commit -m "Update dam water data [skip ci]" || echo "No changes"
-          git push
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:${{ github.ref }}
