@@ -8,15 +8,14 @@ import time
 import os
 from datetime import datetime
 
-# ตั้งค่า Chrome สำหรับรันบน GitHub Actions (Linux)
 options = Options()
-options.add_argument("--headless=new")   # ใช้ headless รุ่นใหม่
+options.add_argument("--headless=new")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
+options.binary_location = "/usr/bin/chromium-browser"  # ✅ ชี้ไปที่ chromium
 
 driver = webdriver.Chrome(options=options)
-
-driver.get('https://nationalthaiwater.onwr.go.th/dam')
+driver.get("https://nationalthaiwater.onwr.go.th/dam")
 
 WebDriverWait(driver, 15).until(
     EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
