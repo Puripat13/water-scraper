@@ -1,60 +1,59 @@
-# tmd_forecast_today_all.py
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 
-import os, time, random
+import os
+import re
+import time
+import random
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 
+# -------- Selenium --------
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
-HOME = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
+# ======================================================================
+# CONFIG
+# ======================================================================
+HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
+CSV_OUT: str = os.getenv("CSV_OUT", r"tmd_7day_forecast_today.csv")
 
+PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
+SCRIPT_TIMEOUT: int = int(os.getenv("SCRIPT_TIMEOUT", "50"))
+WAIT_MED: int = int(os.getenv("WAIT_MED", "20"))
+WAIT_LONG: int = int(os.getenv("WAIT_LONG", "35"))
 
-# ============ Driver (ปรับเพื่อลดโหลด) ============
-def make_driver():
+RETRIES_PER_PROVINCE = int(os.getenv("RETRIES_PER_PROVINCE", "2"))
+MAX_SCRAPE_PASSES = int(os.getenv("MAX_SCRAPE_PASSES", "5"))
+
+SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.7"))
+SLEEP_MAX = float(os.getenv("SLEEP_MAX", "1.2"))
+
+PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
+RE_INT = re.compile(r"(\d+)")
+
+# ======================================================================
+# SELENIUM HELPERS
+# ======================================================================
+def make_driver() -> webdriver.Chrome:
     opt = Options()
     opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--disable-gpu")
-    opt.add_argument("--disable-extensions")
-    opt.add_argument("--disable-infobars")
     opt.add_argument("--window-size=1366,768")
-    opt.add_argument("--disable-blink-features=AutomationControlled")
-    opt.add_argument("--remote-allow-origins=*")
-    opt.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    )
-    # โหลดแบบไม่ต้องรอทุก resource
-    opt.page_load_strategy = "none"
-
-    # บล็อค resource หนัก
-    prefs = {
-        "profile.managed_default_content_settings.images": 2,
-        "profile.managed_default_content_settings.stylesheets": 2,
-        "profile.managed_default_content_settings.fonts": 2,
-        "profile.managed_default_content_settings.plugins": 2,
-        "profile.managed_default_content_settings.popups": 2,
-        "profile.managed_default_content_settings.notifications": 2,
-        "profile.managed_default_content_settings.autoplay": 2,
-    }
-    opt.add_experimental_option("prefs", prefs)
-
+    opt.page_load_strategy = PAGE_LOAD_STRATEGY
     drv = webdriver.Chrome(options=opt)
-    drv.set_page_load_timeout(20)
-    drv.set_script_timeout(20)
+    drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
+    drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
 
-
-def safe_get(driver, url, timeout=20):
+def safe_get(driver, url, timeout=PAGELOAD_TIMEOUT):
     try:
         driver.set_page_load_timeout(timeout)
         driver.get(url)
@@ -64,283 +63,203 @@ def safe_get(driver, url, timeout=20):
         except Exception:
             pass
 
+def open_home_ready(driver) -> None:
+    safe_get(driver, HOME, timeout=WAIT_MED)
+    WebDriverWait(driver, WAIT_LONG).until(
+        EC.presence_of_element_located((By.ID, "province-selector"))
+    )
 
-def js_click(driver, el):
-    driver.execute_script("arguments[0].click();", el)
-
-
-def click_if_present(driver, by, selector, timeout=6):
-    try:
-        el = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, selector)))
-        js_click(driver, el)
-        return True
-    except:
-        return False
-
-
-# ============ Entry / Cookie ============
-def bypass_eventday_cookie(driver):
-    # ปุ่มเข้าเว็บ / ยอมรับคุกกี้ (ถ้ามี)
-    for xp in ["//button[contains(text(),'เข้าสู่เว็บไซต์')]", "//a[contains(text(),'เข้าสู่เว็บไซต์')]"]:
-        if click_if_present(driver, By.XPATH, xp, 4):
-            break
-    for xp in ["//button[contains(text(),'ยอมรับทั้งหมด')]", "//button[contains(text(),'ยอมรับ')]"]:
-        if click_if_present(driver, By.XPATH, xp, 3):
-            break
-
-
-def open_home_ready(driver):
-    for _ in range(3):
-        safe_get(driver, HOME, timeout=12)
-        bypass_eventday_cookie(driver)
+def collect_mapping_from_select(driver) -> Dict[str, str]:
+    MAX_TRIES = 5
+    for attempt in range(1, MAX_TRIES + 1):
+        sel = WebDriverWait(driver, WAIT_MED).until(
+            EC.presence_of_element_located((By.ID, "province-selector"))
+        )
         try:
-            # แค่รอให้ select2 container โผล่
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.ID, "select2-province-selector-container"))
-            )
-            return True
-        except TimeoutException:
-            try:
-                driver.execute_script("window.stop();")
-                driver.refresh()
-            except Exception:
-                pass
-    # debug dump เผื่อใช้ดูทีหลัง
-    try:
-        with open("debug_tmd_home.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        driver.save_screenshot("debug_tmd_home.png")
-    except Exception:
-        pass
-    raise TimeoutError("ไม่พบ select2 จังหวัดบนหน้าแรก TMD")
-
-
-# ============ Select2 Helpers (เร็วขึ้น) ============
-def _collect_select2_mapping_fast(driver):
-    """
-    เปิด dropdown ครั้งเดียว, scroll ให้สุด, เก็บ mapping (name -> value)
-    เพื่อต่อไปจะ set ผ่าน JS โดยตรง (เร็วกว่าเปิด/ค้น/คลิกทุกรอบ)
-    """
-    # เปิดกล่อง
-    WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.ID, "select2-province-selector-container"))
-    ).click()
-
-    # ช่องค้นหาโผล่ = dropdown เปิดแล้ว
-    WebDriverWait(driver, 10).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, "input.select2-search__field"))
-    )
-    results = WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.ID, "select2-province-selector-results"))
-    )
-
-    # scroll จนรายการคงที่
-    stable = 0
-    last_cnt = -1
-    while True:
-        items = results.find_elements(By.CSS_SELECTOR, "li.select2-results__option")
-        cnt = len(items)
-        if cnt == last_cnt:
-            stable += 1
-            if stable >= 2:
-                break
-        else:
-            stable = 0
-            last_cnt = cnt
-        driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", results)
-        time.sleep(0.15)
-
-    mapping = {}
-    for li in items:
-        name = li.text.strip()
-        if not name:
-            continue
-        # พยายามเดาค่า value จาก id ของ li (pattern ทั่วไป select2-<select>-result-*-<value>)
-        li_id = li.get_attribute("id") or ""
-        value = li_id.split("-")[-1] if "-" in li_id else name
-        mapping[name] = value
-
-    # ปิด dropdown
-    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            driver.execute_script("arguments[0].focus();", sel)
+            driver.execute_script("arguments[0].click();", sel)
+            time.sleep(0.2)
+        except Exception:
+            pass
+        mapping: Dict[str, str] = {}
+        try:
+            options = sel.find_elements(By.TAG_NAME, "option")
+            for op in options:
+                name = (op.text or "").strip()
+                val = (op.get_attribute("value") or "").strip()
+                if not name or not val:
+                    continue
+                if name.startswith("เลือก"):
+                    continue
+                mapping[name] = val
+        except StaleElementReferenceException:
+            mapping = {}
+        if len(mapping) >= 10:
+            return mapping
+        time.sleep(0.5)
+        driver.refresh()
+        time.sleep(0.5)
+    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ")
     return mapping
 
+def _js_set_select_value(driver, value: str) -> bool:
+    js = "var s=document.getElementById('province-selector');if(!s)return false;s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));return true;"
+    return bool(driver.execute_script(js, value))
 
-def _js_set_select2_value(driver, value):
-    """
-    พยายาม set ค่า select2 ผ่าน JS ให้เร็วสุด
-    สมมติ select element จริงชื่อ 'province-selector' (กรณีเว็บเปลี่ยน อาจไม่สำเร็จ → fallback)
-    """
-    js = """
-    var sel = document.getElementById('province-selector');
-    if (!sel) return false;
-    sel.value = arguments[0];
-    var ev = new Event('change', { bubbles: true });
-    sel.dispatchEvent(ev);
-    return true;
-    """
-    try:
-        return bool(driver.execute_script(js, value))
-    except Exception:
+def select_province(driver, province_name: str, mapping: Dict[str, str]) -> bool:
+    val = mapping.get(province_name, "")
+    if not val:
         return False
+    ok = _js_set_select_value(driver, val)
+    if ok:
+        time.sleep(0.2)
+    return ok
 
-
-def select_province_fast(driver, name, mapping):
-    """
-    เร็ว: ใช้ JS set value ถ้าไม่ได้ค่อย fallback ไปวิธีเดิม (ค้นหา+คลิก)
-    """
-    value = mapping.get(name)
-    if value and _js_set_select2_value(driver, value):
-        # รอให้คอนเทนต์โหลด/อัพเดต
-        time.sleep(0.15)
-        return True
-
-    # --- fallback เดิม (ค้นหา+คลิก) ---
-    WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.ID, "select2-province-selector-container"))
-    ).click()
-    search = WebDriverWait(driver, 10).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, "input.select2-search__field"))
+def wait_rain_info(driver):
+    WebDriverWait(driver, WAIT_MED).until(
+        EC.presence_of_element_located((By.XPATH, "//div[contains(text(),'%')]"))
     )
-    search.clear()
-    search.send_keys(name)
-    # รอสั้นๆ ให้ผลลัพธ์กรองเสร็จ
-    WebDriverWait(driver, 5).until(
-        EC.presence_of_element_located((By.XPATH,
-            ("//li[contains(@class,'select2-results__option') and "
-             "normalize-space(text())='{0}']").format(name)))
-    )
-    js_click(driver, driver.find_element(
-        By.XPATH,
-        ("//li[contains(@class,'select2-results__option') and "
-         "normalize-space(text())='{0}']").format(name)
-    ))
-    # ปล่อยให้หน้าอัปเดต
-    time.sleep(0.1)
-    return True
 
+def _extract_percent(text: str) -> Optional[float]:
+    m = RE_INT.search(text or "")
+    return (int(m.group(1)) / 100.0) if m else None
 
-# ============ Parse "วันนี้" แบบเร็ว (ไม่ใช้ bs4) ============
-def parse_today_fast(driver, province_name):
-    # card วันนี้
-    # หา card ที่มีหัว "วันนี้"
+def parse_today_fast(driver, province_name: str) -> Optional[Dict[str, str]]:
     cards = driver.find_elements(By.CSS_SELECTOR, "div.card.card-shadow.text-center")
     for c in cards:
         try:
             head = c.find_element(By.CSS_SELECTOR, "div.font-small")
             if head.text.strip() != "วันนี้":
                 continue
-
-            date_txt = c.find_element(By.CSS_SELECTOR, "div.font-tiny.text-dark2").text.strip()
-
-            # อุณหภูมิ สูง/ต่ำ
-            twrap = c.find_element(By.CSS_SELECTOR, "div.d-flex.justify-content-around.sub-heading")
-            dvals = twrap.find_elements(By.CSS_SELECTOR, "div")
-            tmax = dvals[0].text.strip() if len(dvals) > 0 else ""
-            tmin = dvals[2].text.strip() if len(dvals) > 2 else ""
-
-            tinys = c.find_elements(By.CSS_SELECTOR, "div.font-tiny.text-center")
-            cond = tinys[0].text.strip() if len(tinys) > 0 else ""
-            rain = tinys[1].text.strip() if len(tinys) > 1 else ""
-            wind = ""
-            try:
-                wind = c.find_element(By.CSS_SELECTOR, "span.font-tiny.ps-1").text.strip()
-            except Exception:
-                pass
-
-            return {
-                "จังหวัด/รายการ": province_name,
-                "วันที่": date_txt,
-                "อุณหภูมิสูงสุด": tmax,
-                "อุณหภูมิต่ำสุด": tmin,
-                "สภาพอากาศ": cond,
-                "โอกาสฝน": rain,
-                "ลม": wind,
-                "เวลาบันทึก": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
+            tiny = c.find_elements(By.CSS_SELECTOR, "div.font-tiny.text-center")
+            cond, rain_text = None, None
+            for el in tiny:
+                txt = (el.text or "").strip()
+                if "%" in txt and not rain_text:
+                    rain_text = txt
+                elif "%" not in txt and not cond:
+                    cond = txt
+            if cond and rain_text:
+                return {
+                    "Province": province_name,
+                    "Weather": cond,
+                    "RainChance": _extract_percent(rain_text),
+                    "DateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
         except Exception:
             continue
     return None
 
-
-# ============ Main ============
+# ======================================================================
+# MAIN
+# ======================================================================
 def main():
     driver = make_driver()
-    rows, failed = [], []
+    all_rows: List[Dict[str, str]] = []
+    failed: List[str] = []
+
     try:
         open_home_ready(driver)
-
-        # เตรียม mapping สำหรับเลือกจังหวัดด้วย JS (เปิด dropdown แค่ครั้งเดียว)
-        mapping = _collect_select2_mapping_fast(driver)
-
+        mapping = collect_mapping_from_select(driver)
         names = list(mapping.keys())
-        print(f"รายการจาก select2 ทั้งหมด: {len(names)} รายการ")
+        print(f"พบจังหวัด {len(names)} รายการ")
 
-        for i, name in enumerate(names, 1):
-            ok = False
-            for attempt in range(2):
-                try:
-                    # เลือกจังหวัดแบบเร็ว
-                    select_province_fast(driver, name, mapping)
+        to_try = names[:]
+        pass_num = 0
+        prev_failed_count: Optional[int] = None
 
-                    # รอให้ card "วันนี้" โผล่จริง ๆ (หน้าเพิ่งอัปเดต)
-                    WebDriverWait(driver, 8).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.card.card-shadow.text-center"))
-                    )
+        while to_try and pass_num < MAX_SCRAPE_PASSES:
+            pass_num += 1
+            print(f"\nเริ่มรอบที่ {pass_num} (ลอง {len(to_try)} จังหวัด)")
+            rows, failed_this = _try_scrape_provinces(driver, to_try, RETRIES_PER_PROVINCE, mapping)
 
-                    row = parse_today_fast(driver, name)
-                    if row:
-                        rows.append(row); ok = True
-                        if i % 10 == 0 or i <= 5:
-                            print(f"[{i}/{len(names)}] {name} ✔")
-                        break
-                except Exception as e:
-                    if attempt == 0:
-                        # refresh เร็วๆ ครั้งเดียว
-                        try:
-                            driver.execute_script("window.stop();")
-                            driver.refresh()
-                        except Exception:
-                            pass
-                    else:
-                        print(f"[{i}/{len(names)}] {name} ✖ {e}")
-            if not ok:
-                failed.append(name)
+            all_rows.extend(rows)
+            print(f"รอบ {pass_num} สำเร็จ {len(rows)} จังหวัด, พลาด {len(failed_this)} จังหวัด")
+
+            if not failed_this:
+                print("✅ เก็บข้อมูลครบทุกจังหวัดแล้ว")
+                failed = []
+                break
+
+            if prev_failed_count is not None and len(failed_this) >= prev_failed_count:
+                print("⚠️ ไม่มีความคืบหน้าจากรอบก่อนหน้า")
+                failed = failed_this
+                break
+
+            to_try = failed_this
+            prev_failed_count = len(failed_this)
+
+        else:
+            failed = to_try if to_try else []
 
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        driver.quit()
 
-    if rows:
-        df = pd.DataFrame(rows)
-        keep_cols = ["จังหวัด/รายการ", "สภาพอากาศ", "โอกาสฝน", "เวลาบันทึก"]
-        df = df[keep_cols].rename(columns={
-            "จังหวัด/รายการ": "Province",
-            "สภาพอากาศ": "Weather",
-            "โอกาสฝน": "RainChance",
-            "เวลาบันทึก": "DateTime"
-        })
-        df["RainChance"] = (
-            df["RainChance"].astype(str)
-            .str.extract(r'(\d+)')[0]
-            .astype(float)
-            .div(100)
-        )
+    new_df = pd.DataFrame(all_rows)
 
-        file_exists = os.path.exists(CSV_OUT)
-        df.to_csv(
-            CSV_OUT,
-            mode="a",
-            header=not file_exists,
-            index=False,
-            encoding="utf-8-sig"
-        )
-        print(f"\n✅ บันทึก {len(df)} แถว ต่อท้ายไฟล์: {CSV_OUT}")
+    # Save only to local CSV file
+    if not new_df.empty:
+        out_dir = os.path.dirname(os.path.abspath(CSV_OUT))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
+        print(f"\n📝 บันทึกแถวใหม่ลงโลคอล: {CSV_OUT}")
+    else:
+        print("\n❌ ไม่พบข้อมูลใหม่ที่ scrape ได้")
 
-    if failed:
-        print("\nรายการที่ดึงไม่สำเร็จ:", ", ".join(failed))
+# ======================================================================
+# INTERNAL: scrape loop
+# ======================================================================
+def _try_scrape_provinces(
+    driver,
+    names: List[str],
+    retries_per_province: int,
+    mapping: Dict[str, str],
+) -> Tuple[List[Dict[str, str]], List[str]]:
+    rows: List[Dict[str, str]] = []
+    failed: List[str] = []
+    total = len(names)
+    print(f"เริ่มดึง {total} จังหวัด")
 
+    for i, name in enumerate(names, 1):
+        ok = False
+        for attempt in range(retries_per_province):
+            try:
+                if not select_province(driver, name, mapping):
+                    raise RuntimeError("ตั้งค่า select ไม่สำเร็จ")
 
+                WebDriverWait(driver, WAIT_MED).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.card.card-shadow.text-center"))
+                )
+                wait_rain_info(driver)
+
+                row = parse_today_fast(driver, name)
+                if row:
+                    rows.append(row)
+                    ok = True
+                    print(f"[{i}/{total}] {name} ✔")
+                    time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+                    break
+                else:
+                    raise RuntimeError("อ่าน card วันนี้ ไม่สำเร็จ")
+
+            except (StaleElementReferenceException, TimeoutException):
+                driver.refresh()
+                time.sleep(0.8)
+            except Exception as e:
+                if attempt < retries_per_province - 1:
+                    driver.refresh()
+                    time.sleep(0.8)
+                else:
+                    print(f"[{i}/{total}] {name} ✖ {e}")
+
+        if not ok:
+            failed.append(name)
+
+    return rows, failed
+
+# ======================================================================
+# ENTRY
+# ======================================================================
 if __name__ == "__main__":
     main()
