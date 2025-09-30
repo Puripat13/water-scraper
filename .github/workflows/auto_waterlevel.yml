@@ -23,9 +23,9 @@ jobs:
         with:
           python-version: '3.10'
 
-      # ใช้ Chrome พร้อม Selenium Manager (ไม่ต้องลง chromedriver เอง)
       - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
+
       - name: Show Chrome version
         run: google-chrome --version || true
 
@@ -49,16 +49,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # อัปโหลดแบบปลอดภัย:
-      # - ถ้ามี DRIVE_FILE_ID -> Overwrite ไฟล์เดิม (My Drive/Shared Drive ก็ได้)
-      # - ถ้าไม่มี แต่ PURIPAT_ID เป็น Shared Drive -> Create ใหม่ในโฟลเดอร์นั้น
-      # - ถ้า PURIPAT_ID เป็น My Drive และไม่มีไฟล์เดิม -> แจ้งวิธีแก้ (ต้องสร้างไฟล์ว่างแล้วแชร์ให้ SA หรือใส่ DRIVE_FILE_ID)
       - name: Append & Upload to Google Drive (merge + dedup + fixed schema)
         if: success() && hashFiles('waterlevel_report.csv') != ''
         env:
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}   # JSON ของ Service Account (ทั้งก้อน)
-          DRIVE_FILE_ID: ${{ secrets.DRIVE_FILE_ID }}            # (แนะนำเมื่อใช้ My Drive) fileId ของไฟล์เดิม
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}             # (ทางเลือก) โฟลเดอร์ปลายทาง; ใช้ได้ทั้ง My/Shared Drive
+          WATERLEVEL_FILE_ID: ${{ secrets.WATERLEVEL_FILE_ID }}  # fileId ของไฟล์เดิม
           CSV_OUT: waterlevel_report.csv
         run: |
           python - <<'PY'
@@ -70,8 +65,7 @@ jobs:
           from googleapiclient.errors import HttpError
 
           SA = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-          FILE_ID = (os.environ.get("DRIVE_FILE_ID") or "").strip() or None
-          FOLDER_ID = (os.environ.get("DRIVE_FOLDER_ID") or "").strip() or None
+          FILE_ID = (os.environ.get("WATERLEVEL_FILE_ID") or "").strip() or None
           CSV = os.environ.get("CSV_OUT", "waterlevel_report.csv")
 
           # ---- สคีมา 9 คอลัมน์ (อังกฤษ) ----
@@ -123,24 +117,7 @@ jobs:
               drive.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
               print(f"✅ Updated (append) fileId={fid}, rows={len(df)}")
 
-          def create_new(folder_id, df):
-              tmp = "__merged_upload.csv"
-              df.to_csv(tmp, index=False, encoding="utf-8-sig")
-              body = {"name": os.path.basename(CSV)}
-              if folder_id: body["parents"] = [folder_id]
-              media = MediaFileUpload(tmp, mimetype="text/csv", resumable=True)
-              created = drive.files().create(body=body, media_body=media, fields="id", supportsAllDrives=True).execute()
-              print(f"✅ Created new fileId={created['id']}, rows={len(df)}")
-              return created["id"]
-
-          def escape_single_quotes(s): return s.replace("'", "\\'")
-          def find_by_name_in_folder(name, folder_id):
-              q = "name = '{}' and '{}' in parents and trashed = false".format(escape_single_quotes(name), folder_id)
-              r = drive.files().list(q=q, fields="files(id,name,mimeType)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-              files = r.get("files", [])
-              return files[0] if files else None
-
-          # 1) ถ้ามี FILE_ID -> ดาวน์โหลดเดิม, รวม, ลบซ้ำ, อัปเดตทับ
+          # ถ้ามี FILE_ID -> ดาวน์โหลดเดิม, รวม, ลบซ้ำ, อัปเดตทับ
           if FILE_ID:
               old_df = download_csv(FILE_ID)
               merged = pd.concat([old_df, new_df], ignore_index=True)
@@ -150,34 +127,6 @@ jobs:
               upload_update(FILE_ID, merged)
               sys.exit(0)
 
-          # 2) ไม่มี FILE_ID -> หาไฟล์เดิมตามชื่อในโฟลเดอร์ที่ระบุ
-          if not FOLDER_ID:
-              print("❌ ต้องใส่ DRIVE_FILE_ID (ไฟล์เดิม) หรือ PURIPAT_ID (โฟลเดอร์ปลายทาง)", file=sys.stderr); sys.exit(1)
-
-          try:
-              fmeta = meta(FOLDER_ID)
-          except HttpError as e:
-              print(f"❌ อ่านโฟลเดอร์ไม่สำเร็จ: {e}", file=sys.stderr); sys.exit(1)
-          is_shared = bool(fmeta.get("driveId"))
-
-          existing = find_by_name_in_folder(os.path.basename(CSV), FOLDER_ID)
-          if existing:
-              fid = existing["id"]
-              old_df = download_csv(fid)
-              merged = pd.concat([old_df, new_df], ignore_index=True)
-              keys = [k for k in ["Station","Data_Time","Time"] if k in merged.columns]
-              merged.drop_duplicates(subset=keys, keep="last", inplace=True)
-              upload_update(fid, merged)
-              sys.exit(0)
-
-          # 3) ไม่พบไฟล์เดิม:
-          if is_shared:
-              # Shared Drive สร้างใหม่ได้
-              create_new(FOLDER_ID, new_df)
-              sys.exit(0)
-          else:
-              # โฟลเดอร์เป็น My Drive และไม่มีไฟล์เดิม -> SA ไม่มีโควตาสร้างใหม่
-              print("❌ โฟลเดอร์นี้เป็น My Drive และไม่พบไฟล์เดิมให้ append; SA ไม่สามารถ 'สร้างใหม่' ใน My Drive ได้", file=sys.stderr)
-              print("👉 วิธีใช้ append บน My Drive: สร้างไฟล์ว่างชื่อเดียวกันในโฟลเดอร์นี้ แล้วแชร์ให้ SA เป็น Editor หรือใส่ DRIVE_FILE_ID ของไฟล์นั้น", file=sys.stderr)
-              sys.exit(1)
+          print("❌ ต้องใส่ WATERLEVEL_FILE_ID (fileId ของไฟล์เดิม) ใน Secrets", file=sys.stderr)
+          sys.exit(1)
           PY
