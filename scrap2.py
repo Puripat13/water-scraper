@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import re
 import time
-import json
 from datetime import datetime
 from typing import List, Tuple, Optional
 
@@ -26,28 +25,29 @@ from io import BytesIO
 
 # ------------------------------- Runtime Config --------------------------------
 URL: str = "https://nationalthaiwater.onwr.go.th/waterlevel"
-CSV_OUT: str = "waterlevel_report.csv"  # เปลี่ยนเป็น relative path เพื่อ workflow
+CSV_OUT: str = r"C:\Project_End\CodeProject\waterlevel_report.csv"
 
 # ----- Google Drive -----
 ENABLE_GOOGLE_DRIVE_UPLOAD: bool = True
-SERVICE_ACCOUNT_JSON: str = os.getenv("SERVICE_ACCOUNT_JSON")  # รับ JSON ทั้งก้อนจาก env
-DRIVE_FILE_ID: Optional[str] = os.getenv("WATERLEVEL_FILE_ID")  # รับ fileId จาก env
+SERVICE_ACCOUNT_FILE: str = r"C:\Project_End\CodeProject\githubproject-467507-653192ee67bf.json"
+DRIVE_FOLDER_ID: str = "1YV69Vah7gNvXbYZNKwjQyxQXT36MWjRH"
 CSV_MIMETYPE: str = "text/csv"
+DRIVE_FILE_ID: Optional[str] = "1zfUZeqp5qJrKxtgHu6XmqrN9omvaxVuP"
 
 PAGE_TIMEOUT: int = 40
 CLICK_TIMEOUT: int = 15
 SLEEP_BETWEEN_PAGES: float = 1.0
 
 # ================= Email Notify (SMTP) =================
-EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
+EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
 SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT: int   = int(os.getenv("SMTP_PORT", "587"))
-EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "")
-EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "")
-EMAIL_TO: str      = os.getenv("EMAIL_TO", "")
+EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "pph656512@gmail.com")
+EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "nfns uuan ayrx uykm")
+EMAIL_TO: str      = os.getenv("EMAIL_TO", "pph656512@gmail.com")
 
 def send_email(subject: str, body_text: str) -> None:
-    if not EMAIL_ENABLED or not EMAIL_SENDER or not EMAIL_PASSWORD or not EMAIL_TO:
+    if not EMAIL_ENABLED:
         return
     try:
         from email.mime.text import MIMEText
@@ -73,14 +73,16 @@ def send_email(subject: str, body_text: str) -> None:
 def _check_prereq() -> None:
     if not ENABLE_GOOGLE_DRIVE_UPLOAD:
         return
-    if not SERVICE_ACCOUNT_JSON:
-        raise ValueError("ยังไม่ได้ตั้ง SERVICE_ACCOUNT_JSON (Google Service Account JSON)")
-    if not DRIVE_FILE_ID:
-        raise ValueError("ต้องตั้ง WATERLEVEL_FILE_ID (fileId ของไฟล์ปลายทาง) ผ่าน Secrets/Env")
+    if not SERVICE_ACCOUNT_FILE or not os.path.exists(SERVICE_ACCOUNT_FILE):
+        raise FileNotFoundError(f"ไม่พบไฟล์ Service Account: {SERVICE_ACCOUNT_FILE}")
+    if not DRIVE_FOLDER_ID:
+        raise ValueError("ยังไม่ได้ตั้ง DRIVE_FOLDER_ID")
+    if not DRIVE_FILE_ID_OVERRIDE:
+        raise ValueError("ต้องตั้ง DRIVE_FILE_ID (DRIVE_FILE_ID_OVERRIDE) เป็น fileId ของไฟล์ปลายทาง")
 
 def build_drive_service():
     scopes = ["https://www.googleapis.com/auth/drive"]
-    creds = service_account.Credentials.from_service_account_info(json.loads(SERVICE_ACCOUNT_JSON), scopes=scopes)
+    creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def drive_read_csv_as_df(service, file_id: str) -> Optional[pd.DataFrame]:
@@ -116,7 +118,7 @@ def drive_merge_and_update_df_update_only(
     local_out_path: Optional[str] = None,
 ) -> tuple[str, str, int]:
     """
-    รวม df_new กับไฟล์เดิม (DRIVE_FILE_ID) แล้ว 'update' กลับไฟล์เดิมเท่านั้น
+    รวม df_new กับไฟล์เดิม (DRIVE_FILE_ID_OVERRIDE) แล้ว 'update' กลับไฟล์เดิมเท่านั้น
     - ไม่ค้นหา/ไม่สร้างใหม่ ถ้าเข้าถึงไฟล์เดิมไม่ได้ -> raise
     """
     _check_prereq()
@@ -124,14 +126,14 @@ def drive_merge_and_update_df_update_only(
 
     # ตรวจสิทธิ์/มีอยู่จริงของไฟล์เดิม
     try:
-        service.files().get(fileId=DRIVE_FILE_ID, fields="id,name").execute()
+        service.files().get(fileId=DRIVE_FILE_ID_OVERRIDE, fields="id,name").execute()
     except HttpError as e:
         raise RuntimeError(
-            f"Service Account ไม่มีสิทธิ์หรือหาไฟล์ไม่พบ (fileId={DRIVE_FILE_ID})"
+            f"Service Account ไม่มีสิทธิ์หรือหาไฟล์ไม่พบ (fileId={DRIVE_FILE_ID_OVERRIDE})"
         ) from e
 
     # ดาวน์โหลดไฟล์เดิมมารวม
-    df_old = drive_read_csv_as_df(service, DRIVE_FILE_ID)
+    df_old = drive_read_csv_as_df(service, DRIVE_FILE_ID_OVERRIDE)
     if df_old is None or df_old.empty:
         df_merged = df_new.copy()
     else:
@@ -145,6 +147,7 @@ def drive_merge_and_update_df_update_only(
 
     # บันทึกโลคอล (optional)
     if local_out_path:
+        os.makedirs(os.path.dirname(local_out_path), exist_ok=True)
         df_merged.to_csv(local_out_path, index=False, encoding="utf-8-sig")
 
     # อัปเดตไฟล์เดิม (ต้องส่งเป็น bytes)
@@ -154,7 +157,7 @@ def drive_merge_and_update_df_update_only(
     media = MediaIoBaseUpload(buf, mimetype=CSV_MIMETYPE, resumable=True)
 
     updated = service.files().update(
-        fileId=DRIVE_FILE_ID,
+        fileId=DRIVE_FILE_ID_OVERRIDE,
         media_body=media,
         supportsAllDrives=True,
     ).execute()
@@ -243,6 +246,7 @@ def save_and_upload(all_data: list[list[str]]) -> tuple[int, Optional[str], Opti
         headers += [f"Extra_{i + 1}" for i in range(max_cols - len(headers))]
 
     df_new = pd.DataFrame(all_data, columns=headers)
+    # ถ้าค่าใน Station เป็นภาษาไทย ให้ดึงเฉพาะส่วนตัวอักษรไทยออกมา (เลือกจะคงไว้ก็ได้)
     df_new["Station"] = df_new["Station"].apply(extract_thai)
 
     drive_action = None
@@ -251,11 +255,12 @@ def save_and_upload(all_data: list[list[str]]) -> tuple[int, Optional[str], Opti
 
     if ENABLE_GOOGLE_DRIVE_UPLOAD:
         try:
+            # ✅ คีย์ลบซ้ำเป็นภาษาอังกฤษ
             key_cols = ("Station", "Time", "Data_Time")
             drive_action, drive_file_id, merged_rows = drive_merge_and_update_df_update_only(
                 df_new=df_new,
                 key_cols=key_cols,
-                local_out_path=CSV_OUT,
+                local_out_path=CSV_OUT,   # เก็บไฟล์รวมล่าสุดไว้โลคอลด้วย
             )
             print(f"✅ รวม+อัปเดตไฟล์เดิมสำเร็จ: action={drive_action}, id={drive_file_id}, rows={merged_rows}")
             return merged_rows, drive_action, drive_file_id
@@ -265,7 +270,7 @@ def save_and_upload(all_data: list[list[str]]) -> tuple[int, Optional[str], Opti
             return len(df_new), None, None
     else:
         df_new.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-        print(f"💾 บันทึก {len(df_new)} แถว -> {os.path.abspath(CSV_OUT)}")
+        print(f"💾 บันทึก {len[df_new]} แถว -> {os.path.abspath(CSV_OUT)}")
         return len(df_new), None, None
 
 # ==================================== 6) Main ====================================
