@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 # ============================== 1) IMPORTS & CONFIG ==============================
-import os
-import re
-import time
+import os, re, time
 from datetime import datetime
 from typing import List, Optional
 
 import pandas as pd
-
-# -------- Selenium --------
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -20,14 +16,15 @@ from selenium.webdriver.support import expected_conditions as EC
 URL: str = os.getenv("WATERLEVEL_URL", "https://nationalthaiwater.onwr.go.th/waterlevel")
 CSV_OUT: str = os.getenv("CSV_OUT", "waterlevel_report.csv")
 
-PAGE_TIMEOUT: int = int(os.getenv("PAGE_TIMEOUT", "40"))
-CLICK_TIMEOUT: int = int(os.getenv("CLICK_TIMEOUT", "15"))
-SLEEP_BETWEEN_PAGES: float = float(os.getenv("SLEEP_BETWEEN_PAGES", "1.0"))
+PAGE_TIMEOUT: int = int(os.getenv("PAGE_TIMEOUT", "25"))
+CLICK_TIMEOUT: int = int(os.getenv("CLICK_TIMEOUT", "10"))
+SLEEP_BETWEEN_PAGES: float = float(os.getenv("SLEEP_BETWEEN_PAGES", "0"))  # ✅ เร็วสุด = 0
+MAX_PAGES: int = int(os.getenv("MAX_PAGES", "0"))  # 0 = ไม่จำกัด (ตั้ง 3-5 ตอนเทสต์)
 
-# ============================= 2) Selenium (เสถียร/กัน timeout) =============================
+# ============================= 2) Selenium (เร็ว/กัน timeout) =============================
 def make_driver() -> webdriver.Chrome:
     opt = Options()
-    opt.page_load_strategy = "none"  # ✅ ไม่รอโหลดทั้งหน้า ลดโอกาส timeout บน runner
+    opt.page_load_strategy = "none"  # ✅ ไม่รอโหลดทั้งหน้า
     opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
@@ -44,8 +41,7 @@ def make_driver() -> webdriver.Chrome:
     drv.set_script_timeout(120)
     return drv
 
-def open_url_with_retry(driver: webdriver.Chrome, url: str, tries: int = 3, wait_css: str = ".MuiTable-root tbody tr", wait_sec: int = 40):
-    """เปิด URL แบบ retry และรอเฉพาะ element ที่ต้องใช้"""
+def open_url_with_retry(driver: webdriver.Chrome, url: str, tries: int = 3, wait_css: str = ".MuiTable-root tbody tr", wait_sec: int = PAGE_TIMEOUT):
     last_err = None
     for i in range(1, tries + 1):
         try:
@@ -58,11 +54,47 @@ def open_url_with_retry(driver: webdriver.Chrome, url: str, tries: int = 3, wait
         except Exception as e:
             last_err = e
             print(f"⚠️ open_url attempt {i}/{tries} failed: {repr(e)}")
-            time.sleep(2 * i)
+            time.sleep(1.5 * i)
     raise last_err
 
+def _set_rows_per_page(driver: webdriver.Chrome, target_values=(200, 100, 50)):
+    """พยายามตั้ง Rows per page ให้มากที่สุด เพื่อลดจำนวนหน้า"""
+    open_xpaths = [
+        "//div[contains(@class,'MuiTablePagination')]/div[contains(@class,'MuiInputBase-root')]//div[@role='button']",
+        "//div[contains(@class,'MuiTablePagination')]/div[contains(@class,'MuiSelect-root')]",
+        "//div[contains(@class,'MuiTablePagination')][.//p[contains(.,'Rows per page')]]//div[@role='button']",
+        "//div[contains(@class,'MuiTablePagination')]//input[contains(@class,'MuiSelect')]/ancestor::div[@role='button']",
+    ]
+    opened = False
+    for xp in open_xpaths:
+        try:
+            el = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((By.XPATH, xp)))
+            driver.execute_script("arguments[0].click();", el)
+            opened = True
+            break
+        except Exception:
+            continue
+    if not opened:
+        print("ℹ️ ไม่พบเมนู Rows per page (ข้าม)")
+        return
+
+    for val in target_values:
+        for xp in (f"//li[normalize-space()='{val}']",
+                   f"//ul//li[normalize-space()='{val}']",
+                   f"//div[@role='listbox']//li[normalize-space()='{val}']"):
+            try:
+                li = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, xp)))
+                driver.execute_script("arguments[0].click();", li)
+                WebDriverWait(driver, 8).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiTable-root tbody tr"))
+                )
+                print(f"✅ Rows per page set to {val}")
+                return
+            except Exception:
+                continue
+    print("ℹ️ เปลี่ยน Rows per page ไม่สำเร็จ (อาจไม่มีตัวเลือกนี้)")
+
 def _find_next_button(driver: webdriver.Chrome):
-    """รองรับหลายรูปแบบของปุ่ม Next Page"""
     xpaths = [
         "//button[@aria-label='Go to next page']",
         "//span[@title='Next Page']/button",
@@ -70,19 +102,34 @@ def _find_next_button(driver: webdriver.Chrome):
     ]
     for xp in xpaths:
         try:
-            btn = WebDriverWait(driver, CLICK_TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, xp))
-            )
+            btn = WebDriverWait(driver, CLICK_TIMEOUT).until(EC.presence_of_element_located((By.XPATH, xp)))
             if btn:
                 return btn
         except Exception:
             continue
     return None
 
+def _is_disabled(btn) -> bool:
+    try:
+        if btn.get_attribute("disabled") in ("true", "disabled"):
+            return True
+        if btn.get_attribute("aria-disabled") in ("true", "disabled"):
+            return True
+    except Exception:
+        pass
+    return False
+
+# ============================= 3) Scrape & Save =============================
 def scrape_waterlevel() -> list[list[str]]:
     driver = make_driver()
     try:
         open_url_with_retry(driver, URL, tries=3, wait_css=".MuiTable-root tbody tr", wait_sec=PAGE_TIMEOUT)
+
+        # ลดจำนวนหน้าให้มากที่สุด
+        try:
+            _set_rows_per_page(driver, target_values=(200, 100, 50))
+        except Exception as e:
+            print("ℹ️ ข้ามการตั้ง Rows per page:", e)
 
         def _get_rows():
             return driver.find_elements(By.CSS_SELECTOR, ".MuiTable-root tbody tr")
@@ -97,15 +144,18 @@ def scrape_waterlevel() -> list[list[str]]:
                 cols = [c.text.strip() for c in row.find_elements(By.CSS_SELECTOR, "td")]
                 if len(cols) < 5:
                     continue
-                # เติมวันที่ท้ายตาราง (คอลัมน์ 9 คือ Data_Time อยู่แล้ว)
                 if len(cols) == 9:
                     cols[-1] = current_date
                 else:
                     cols.append(current_date)
                 all_data.append(cols)
 
+            if MAX_PAGES and page_idx >= MAX_PAGES:
+                print(f"⛔️ Reach MAX_PAGES={MAX_PAGES}, stop early for speed.")
+                break
+
             next_btn = _find_next_button(driver)
-            if not next_btn or (not next_btn.is_enabled()):
+            if not next_btn or _is_disabled(next_btn):
                 break
 
             first_old = rows[0] if rows else None
@@ -136,7 +186,6 @@ def scrape_waterlevel() -> list[list[str]]:
     finally:
         driver.quit()
 
-# ============================= 3) Helpers & Save =============================
 def extract_thai(text: str) -> str:
     if pd.isna(text) or text is None:
         return ""
@@ -148,7 +197,6 @@ def save_csv(all_data: list[list[str]], out_path: str) -> int:
         print("⚠️ ไม่พบข้อมูลให้บันทึก")
         return 0
 
-    # ทำให้จำนวนคอลัมน์เท่ากัน
     max_cols = max(len(r) for r in all_data)
     all_data = [r + [""] * (max_cols - len(r)) for r in all_data]
 
@@ -160,11 +208,8 @@ def save_csv(all_data: list[list[str]], out_path: str) -> int:
         headers += [f"Extra_{i + 1}" for i in range(max_cols - len(headers))]
 
     df = pd.DataFrame(all_data, columns=headers)
-
-    # หาก Station มีไทยปนอยู่ ให้คงค่าเดิมถ้าไม่พบไทย หรือดึงเฉพาะตัวไทยถ้าพบ
     df["Station"] = df["Station"].apply(extract_thai)
 
-    # สร้างโฟลเดอร์ปลายทางถ้ายังไม่มี
     out_dir = os.path.dirname(os.path.abspath(out_path))
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
