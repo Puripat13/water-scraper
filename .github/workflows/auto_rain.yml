@@ -13,7 +13,10 @@ jobs:
     env:
       TZ: Asia/Bangkok
       CSV_OUT: tmd_7day_forecast_today.csv
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "false"
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"     # GitHub จะอัปโหลดขึ้น Drive
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
+      DRIVE_FILE_ID: ${{ secrets.PURIPAT_ID }}  # ไม่ใช่ folder ID ต้องเป็น "FILE ID"
+      EMAIL_ENABLED: "false"                  # ปิดอีเมลเวลา run บน GitHub (แนะนำ)
 
     steps:
       - name: Checkout repository
@@ -24,7 +27,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Setup Google Chrome (for Selenium)
+      - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
 
       - name: Install dependencies
@@ -35,127 +38,9 @@ jobs:
       - name: Run scraper
         run: python scrap1.py
 
-      - name: Append & Upload CSV to Google Drive (Shared Drive)
-        env:
-          DRIVE_FOLDER_ID: ${{ secrets.PURIPAT_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
-          CSV_OUT: ${{ env.CSV_OUT }}
-        run: |
-          python - << 'PY'
-          import os, io, json, sys
-          import pandas as pd
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-
-          CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
-          FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-          SA_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-
-          if not FOLDER_ID:
-              print("❌ DRIVE_FOLDER_ID is missing", file=sys.stderr)
-              sys.exit(1)
-
-          if not SA_JSON:
-              print("❌ SERVICE_ACCOUNT_JSON is missing", file=sys.stderr)
-              sys.exit(1)
-
-          if not os.path.exists(CSV_OUT):
-              print(f"❌ Local CSV not found: {CSV_OUT}", file=sys.stderr)
-              sys.exit(1)
-
-          # authentication
-          info = json.loads(SA_JSON)
-          creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          # verify folder exists
-          try:
-            folder_meta = drive.files().get(
-                fileId=FOLDER_ID,
-                fields="id,name,driveId",
-                supportsAllDrives=True
-            ).execute()
-          except Exception as e:
-            print("❌ Cannot access folder:", e, file=sys.stderr)
-            sys.exit(1)
-
-          fname = os.path.basename(CSV_OUT)
-
-          # find existing file
-          q = f"name = '{fname}' and '{FOLDER_ID}' in parents and trashed = false"
-          res = drive.files().list(
-              q=q,
-              fields="files(id,name,mimeType)",
-              supportsAllDrives=True,
-              includeItemsFromAllDrives=True
-          ).execute()
-
-          files = res.get("files", [])
-          new_df = pd.read_csv(CSV_OUT)
-
-          if files:
-              # existing file found → append + update
-              fid = files[0]["id"]
-              mime = files[0]["mimeType"]
-
-              if mime.startswith("application/vnd.google-apps"):
-                  print("❌ Existing file is Google Sheets. Append requires Sheets API.", file=sys.stderr)
-                  sys.exit(2)
-
-              # download old
-              request = drive.files().get_media(fileId=fid)
-              fh = io.BytesIO()
-              downloader = MediaIoBaseDownload(fh, request)
-              done = False
-              while not done:
-                  status, done = downloader.next_chunk()
-
-              fh.seek(0)
-              try:
-                  old_df = pd.read_csv(fh)
-              except:
-                  fh.seek(0)
-                  old_df = pd.read_csv(fh, encoding="utf-8-sig")
-
-              all_df = pd.concat([old_df, new_df], ignore_index=True)
-
-              # deduplicate
-              if {"Province", "DateTime"}.issubset(all_df.columns):
-                  all_df.drop_duplicates(subset=["Province", "DateTime"], keep="last", inplace=True)
-
-              # sorting
-              if "DateTime" in all_df.columns:
-                  try:
-                      all_df["DateTime"] = pd.to_datetime(all_df["DateTime"], errors="ignore")
-                      all_df.sort_values("DateTime", inplace=True)
-                  except:
-                      pass
-
-              tmp = "__merged_out.csv"
-              all_df.to_csv(tmp, index=False, encoding="utf-8-sig")
-
-              media = MediaFileUpload(tmp, mimetype="text/csv", resumable=True)
-              drive.files().update(
-                  fileId=fid,
-                  media_body=media,
-                  supportsAllDrives=True
-              ).execute()
-
-              print(f"✅ Updated existing CSV: {fname}  (fileId={fid})")
-
-          else:
-              # create new file
-              meta = {"name": fname, "parents": [FOLDER_ID]}
-              media = MediaFileUpload(CSV_OUT, mimetype="text/csv", resumable=True)
-
-              created = drive.files().create(
-                  body=meta,
-                  media_body=media,
-                  fields="id",
-                  supportsAllDrives=True
-              ).execute()
-
-              print(f"✅ Created new CSV: {fname} (fileId={created['id']})")
-
-          PY
+      - name: Upload artifact (สำหรับ debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csv-output
+          path: tmd_7day_forecast_today.csv
