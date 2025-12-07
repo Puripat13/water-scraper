@@ -2,21 +2,21 @@ name: Auto Scrape Rain
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 20:00 น. เวลาไทย (GitHub = UTC)
+    - cron: '0 13 * * *'   # 20:00 TH
   workflow_dispatch:
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       TZ: Asia/Bangkok
       CSV_OUT: tmd_7day_forecast_today.csv
-      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"     # GitHub จะอัปโหลดขึ้น Drive
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"
+      DRIVE_FILE_ID: ${{ secrets.PURIPAT_ID }}        # <-- ต้องเป็น FILE ID ไม่ใช่ FOLDER
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT }}
-      DRIVE_FILE_ID: ${{ secrets.PURIPAT_ID }}  # ไม่ใช่ folder ID ต้องเป็น "FILE ID"
-      EMAIL_ENABLED: "false"                  # ปิดอีเมลเวลา run บน GitHub (แนะนำ)
+      EMAIL_ENABLED: "false"
 
     steps:
       - name: Checkout repository
@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Setup Google Chrome
+      - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
 
       - name: Install dependencies
@@ -38,9 +38,11 @@ jobs:
       - name: Run scraper
         run: python scrap1.py
 
-      - name: Upload artifact (สำหรับ debug)
-        if: failure()
+      - name: List output
+        run: ls -R .
+
+      - name: Upload CSV artifact (debug)
         uses: actions/upload-artifact@v4
         with:
-          name: csv-output
+          name: tmd_csv_output
           path: tmd_7day_forecast_today.csv
