@@ -31,7 +31,7 @@ from io import BytesIO, StringIO
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
+CSV_OUT: str = os.getenv("CSV_OUT", r"C:\Project_End\CodeProject\tmd_7day_forecast_today.csv")
 
 ENABLE_GOOGLE_DRIVE_UPLOAD: bool = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "true").lower() == "true"
 SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv("SERVICE_ACCOUNT_JSON")
@@ -41,7 +41,7 @@ SERVICE_ACCOUNT_FILE: str = os.getenv(
 )
 
 # 🔒 ใช้ fileId เดิมแบบบังคับ (แก้เป็น id ของไฟล์ปลายทางของคุณ)
-DRIVE_FILE_ID: Optional[str] = os.getenv("DRIVE_FILE_ID")
+DRIVE_FILE_ID = "1jt82tywKHUTY7z5nkEgQ5v_7LXdH2XAt"
 CSV_MIMETYPE: str = "text/csv"
 
 PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
