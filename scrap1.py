@@ -31,13 +31,14 @@ from io import BytesIO, StringIO
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", r"C:\Project_End\CodeProject\tmd_7day_forecast_today.csv")
+# เปลี่ยน default ให้เหมาะกับ Linux / CI (workflow จะ override ด้วย env)
+CSV_OUT: str = os.getenv("CSV_OUT", "./tmd_7day_forecast_today.csv")
 
 ENABLE_GOOGLE_DRIVE_UPLOAD: bool = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "true").lower() == "true"
 SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv("SERVICE_ACCOUNT_JSON")
 SERVICE_ACCOUNT_FILE: str = os.getenv(
     "SERVICE_ACCOUNT_FILE",
-    r"C:\Project_End\CodeProject\githubproject-467507-653192ee67bf.json",
+    r"./githubproject-467507-653192ee67bf.json",
 )
 
 # 🔒 ใช้ fileId เดิมแบบบังคับ (แก้เป็น id ของไฟล์ปลายทางของคุณ)
@@ -68,6 +69,8 @@ EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "pph656512@gmail.com")
 EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "nfns uuan ayrx uykm")  # ⚠️ แนะนำส่งผ่าน ENV จริง
 EMAIL_TO: str = os.getenv("EMAIL_TO", "pph656512@gmail.com")
 
+# Headless control (สามารถ override ผ่าน env HEADLESS="false")
+HEADLESS: bool = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
 
 def send_email(subject: str, body_text: str) -> None:
     if not EMAIL_ENABLED:
@@ -199,12 +202,56 @@ def drive_merge_and_update_df_update_only(
 # SELENIUM HELPERS
 # ======================================================================
 def make_driver() -> webdriver.Chrome:
+    """
+    สร้าง Chrome WebDriver ที่ปรับค่าให้รันบน GitHub Actions / Linux ได้
+    สามารถควบคุมการเปิด headless ผ่าน env HEADLESS (true/false)
+    จะพยายามตั้ง binary_location เฉพาะเมื่อไฟล์มีอยู่จริง
+    """
     opt = Options()
-    # opt.add_argument("--headless=new")  # เปิดถ้าต้องการ headless
+
+    # Base safe options for CI
+    if HEADLESS:
+        # Selenium 4+ recommends --headless=new for newer chrome
+        try:
+            opt.add_argument("--headless=new")
+        except Exception:
+            opt.add_argument("--headless")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--window-size=1366,768")
-    opt.page_load_strategy = PAGE_LOAD_STRATEGY
+    opt.add_argument("--disable-gpu")
+    opt.add_argument("--disable-software-rasterizer")
+    opt.add_argument("--disable-extensions")
+    opt.add_argument("--remote-debugging-port=9222")
+    opt.add_argument("--window-size=1920,1080")
+    opt.add_argument("--disable-background-timer-throttling")
+    opt.add_argument("--disable-backgrounding-occluded-windows")
+    # Reduce logging spam
+    opt.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+    opt.add_experimental_option("useAutomationExtension", False)
+
+    # Try common Chrome binary locations on Linux CI; only set if exists
+    possible_bins = [
+        os.getenv("CHROME_BIN"),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for b in possible_bins:
+        if b and os.path.exists(b):
+            try:
+                opt.binary_location = b
+                break
+            except Exception:
+                pass
+
+    # Set page load strategy if specified
+    try:
+        opt.page_load_strategy = PAGE_LOAD_STRATEGY
+    except Exception:
+        pass
+
+    # Create driver (assumes chromedriver is available in PATH from setup-chrome action)
     drv = webdriver.Chrome(options=opt)
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
@@ -532,7 +579,10 @@ def main():
             failed = to_try if to_try else []
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     new_df = pd.DataFrame(all_rows)
 
