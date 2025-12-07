@@ -3,62 +3,69 @@ import os
 import time
 import json
 import random
+import requests
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 
 import pandas as pd
 
+# ---- Selenium ----
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    TimeoutException, StaleElementReferenceException
-)
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
+# ---- Google Drive API ----
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+
 from io import BytesIO, StringIO
 
-# =====================================================
+
+# ============================================================
 # CONFIG
-# =====================================================
+# ============================================================
 HOME = "https://www.tmd.go.th"
 
 CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
 ENABLE_GOOGLE_DRIVE_UPLOAD = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "false") == "true"
-
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-DRIVE_FILE_ID = os.getenv("DRIVE_FILE_ID")  # ← ต้องเป็น FILE ID
+DRIVE_FILE_ID = os.getenv("DRIVE_FILE_ID")
 
-WAIT_MED = 20
-WAIT_LONG = 35
-SLEEP_MIN = 0.7
-SLEEP_MAX = 1.2
+WAIT_LONG = 25
+WAIT_MED = 15
+SLEEP_MIN = 0.6
+SLEEP_MAX = 1.0
 
-# =====================================================
-# POPUP BYPASS (สำคัญสุด)
-# =====================================================
+
+# ============================================================
+# Bypass popup
+# ============================================================
 def bypass_popup(driver):
     js = """
     try {
         localStorage.setItem('eventVisited','true');
         document.cookie = 'eventVisited=true; path=/; SameSite=Lax';
+
         document.querySelectorAll('button').forEach(b=>{
             if (b.innerText.includes('เข้าสู่เว็บไซต์')) b.click();
         });
+
         ['.modal','.modal-backdrop','.swal2-container','[id*=overlay]','[class*=overlay]']
-        .forEach(sel => document.querySelectorAll(sel).forEach(e=>e.remove()));
+        .forEach(sel => document.querySelectorAll(sel).forEach(el=>el.remove()));
+
         document.body.style.overflow = 'auto';
     } catch(e){}
     """
     driver.execute_script(js)
 
-# =====================================================
-# DRIVER
-# =====================================================
+
+# ============================================================
+# Selenium driver
+# ============================================================
 def make_driver():
     opt = Options()
     opt.add_argument("--headless=new")
@@ -71,27 +78,47 @@ def make_driver():
 def safe_get(driver, url):
     try:
         driver.get(url)
-    except Exception:
+    except:
         driver.execute_script("window.stop();")
 
-# =====================================================
-# GOOGLE DRIVE
-# =====================================================
+
+# ============================================================
+# จังหวัด จาก API (แทน DOM เดิม)
+# ============================================================
+def collect_mapping() -> Dict[str, str]:
+    url = "https://www.tmd.go.th/api/province/select"
+    r = requests.get(url, timeout=10)
+    data = r.json()
+
+    mapping = {item["text"]: item["value"] for item in data if item.get("text")}
+    if len(mapping) < 70:
+        raise TimeoutException("โหลดจังหวัดไม่ครบจาก API")
+
+    print(f"✔ โหลดจังหวัด {len(mapping)} รายการ จาก API แล้ว")
+    return mapping
+
+
+# ============================================================
+# Google Drive upload
+# ============================================================
 def build_drive():
     info = json.loads(SERVICE_ACCOUNT_JSON)
     creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive"]
+        info,
+        scopes=["https://www.googleapis.com/auth/drive"]
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def drive_read_df(service):
     req = service.files().get_media(fileId=DRIVE_FILE_ID)
-    buf = BytesIO(req.execute())
-    text = buf.read().decode("utf-8-sig")
+    data = req.execute()
+
+    text = data.decode("utf-8-sig")
     return pd.read_csv(StringIO(text))
 
-def drive_merge_and_update(df_new: pd.DataFrame):
+def drive_merge_update(df_new: pd.DataFrame):
     service = build_drive()
+
     try:
         df_old = drive_read_df(service)
     except:
@@ -104,47 +131,29 @@ def drive_merge_and_update(df_new: pd.DataFrame):
     merged = pd.concat([df_old, df_new], ignore_index=True)
     merged.drop_duplicates(subset=["Province", "DateTime"], keep="last", inplace=True)
 
-    csv_bytes = merged.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    buf = BytesIO(csv_bytes)
+    buf = BytesIO()
+    buf.write(merged.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"))
     buf.seek(0)
 
     media = MediaIoBaseUpload(buf, mimetype="text/csv")
     service.files().update(
-        fileId=DRIVE_FILE_ID, media_body=media, supportsAllDrives=True
+        fileId=DRIVE_FILE_ID,
+        media_body=media,
+        supportsAllDrives=True
     ).execute()
 
+    print(f"✔ อัปเดตไฟล์ Drive rows = {len(merged)}")
     return len(merged)
 
-# =====================================================
-# SCRAPER
-# =====================================================
+
+# ============================================================
+# Scraper
+# ============================================================
 def open_home(driver):
     safe_get(driver, HOME)
     time.sleep(2)
     bypass_popup(driver)
     time.sleep(2)
-    WebDriverWait(driver, WAIT_LONG).until(
-        EC.presence_of_element_located((By.ID, "province-selector"))
-    )
-
-def collect_mapping(driver) -> Dict[str, str]:
-    WebDriverWait(driver, WAIT_LONG).until(
-        EC.presence_of_element_located((By.ID, "province-selector"))
-    )
-    sel = driver.find_element(By.ID, "province-selector")
-    opts = sel.find_elements(By.TAG_NAME, "option")
-
-    mapping = {}
-    for op in opts:
-        t = op.text.strip()
-        v = op.get_attribute("value").strip()
-        if t and v and "เลือก" not in t:
-            mapping[t] = v
-
-    if len(mapping) < 70:
-        raise TimeoutException("โหลดรายชื่อจังหวัดไม่ครบ")
-
-    return mapping
 
 def select_province(driver, mapping, name):
     val = mapping[name]
@@ -165,30 +174,28 @@ def wait_forecast(driver):
     )
 
 def parse(driver, province):
-    rain_el = driver.find_elements(By.CSS_SELECTOR, ".forecast-rain")
-    weather_el = driver.find_elements(By.CSS_SELECTOR, ".forecast-weather")
-
-    rain_text = rain_el[0].text if rain_el else None
-    weather_text = weather_el[0].text if weather_el else None
+    rain = driver.find_elements(By.CSS_SELECTOR, ".forecast-rain")
+    weather = driver.find_elements(By.CSS_SELECTOR, ".forecast-weather")
 
     return {
         "Province": province,
-        "Weather": weather_text,
+        "Weather": weather[0].text if weather else None,
         "RainChance": None,
         "Rainfall_mm": None,
         "DateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-# =====================================================
+
+# ============================================================
 # MAIN
-# =====================================================
+# ============================================================
 def main():
     driver = make_driver()
     rows = []
 
     try:
         open_home(driver)
-        mapping = collect_mapping(driver)
+        mapping = collect_mapping()
 
         for i, prov in enumerate(mapping.keys(), 1):
             try:
@@ -199,20 +206,18 @@ def main():
                 print(f"[{i}] {prov} ✔")
                 time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
             except Exception as e:
-                print(f"{prov} ✖ {e}")
+                print(f"[{i}] {prov} ✖ {e}")
 
     finally:
         driver.quit()
 
     df = pd.DataFrame(rows)
-
-    # ALWAYS save local CSV
     df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-    print(f"Saved local CSV → {CSV_OUT}")
+    print(f"✔ บันทึก CSV → {CSV_OUT}")
 
     if ENABLE_GOOGLE_DRIVE_UPLOAD:
-        total = drive_merge_and_update(df)
-        print(f"Updated Google Drive rows = {total}")
+        drive_merge_update(df)
+
 
 if __name__ == "__main__":
     main()
