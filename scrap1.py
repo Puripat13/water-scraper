@@ -31,7 +31,7 @@ from io import BytesIO, StringIO
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", r"C:\Project_End\CodeProject\tmd_7day_forecast_today.csv")
+CSV_OUT: str = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
 
 ENABLE_GOOGLE_DRIVE_UPLOAD: bool = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "true").lower() == "true"
 SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv("SERVICE_ACCOUNT_JSON")
@@ -41,7 +41,7 @@ SERVICE_ACCOUNT_FILE: str = os.getenv(
 )
 
 # 🔒 ใช้ fileId เดิมแบบบังคับ (แก้เป็น id ของไฟล์ปลายทางของคุณ)
-DRIVE_FILE_ID: Optional[str] = "1jt82tywKHUTY7z5nkEgQ5v_7LXdH2XAt"
+DRIVE_FILE_ID: Optional[str] = os.getenv("DRIVE_FILE_ID")
 CSV_MIMETYPE: str = "text/csv"
 
 PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
@@ -200,24 +200,16 @@ def drive_merge_and_update_df_update_only(
 # ======================================================================
 def make_driver() -> webdriver.Chrome:
     opt = Options()
-    opt.add_argument("--headless=new")
+    opt.add_argument("--headless=new")  # เปิดถ้าต้องการ headless
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--disable-gpu")
-    opt.add_argument("--window-size=412,915")  # emulate mobile mode
-
-    mobile_emulation = {
-        "deviceName": "Pixel 5"
-    }
-    opt.add_experimental_option("mobileEmulation", mobile_emulation)
-
-    # โหลด DOM ให้ไวขึ้น ไม่รอ JS
-    opt.page_load_strategy = "eager"
-
+    opt.add_argument("--window-size=1366,768")
+    opt.page_load_strategy = PAGE_LOAD_STRATEGY
     drv = webdriver.Chrome(options=opt)
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
+
 
 def safe_get(driver, url, timeout=PAGELOAD_TIMEOUT):
     try:
@@ -639,4 +631,3 @@ if __name__ == "__main__":
         body = f"สคริปต์ล้มเหลวเมื่อ {when}\n\nError:\n{repr(e)}"
         send_email(subject, body)
         raise
-
